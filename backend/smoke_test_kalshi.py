@@ -11,7 +11,9 @@ Usage:
     # List a few open demo markets (to find a --ticker):
     python smoke_test_kalshi.py --list-markets
 
-    # Full lifecycle: place a 1-contract far-from-market order, then cancel it:
+    # Full lifecycle: place a 1-contract far-from-market order, then cancel it.
+    # --ticker is optional; without it, an open BTC market is auto-picked:
+    python smoke_test_kalshi.py --place-test-order
     python smoke_test_kalshi.py --place-test-order --ticker <TICKER>
 
 Credentials (from the Kalshi DEMO dashboard) via environment or a .env file:
@@ -29,6 +31,64 @@ from clients.kalshi_client import KalshiDemoClient
 # ASCII markers (Windows consoles default to cp1252 and choke on unicode ticks).
 OK = "[OK]"
 BAD = "[FAIL]"
+WARN = "[!]"
+
+# Kalshi's Bitcoin hourly series (the market this bot targets).
+BTC_SERIES = "KXBTCD"
+
+
+def _activity(m):
+    """Best-effort 'how active is this market' score across possible field names."""
+    for k in ("volume_fp", "volume", "volume_24h_fp", "liquidity_dollars",
+              "liquidity", "open_interest_fp", "open_interest"):
+        v = m.get(k)
+        try:
+            if v is not None:
+                return float(v)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def pick_btc_market(client):
+    """Auto-pick an open Bitcoin market so --place-test-order needs no --ticker.
+
+    Prefers the KXBTCD hourly series; falls back to any open BTC market, then to
+    the most active open market. Returns a ticker or None.
+    """
+    # 1) The BTC hourly series directly.
+    try:
+        data = client.get_markets(limit=100, status="open", series_ticker=BTC_SERIES)
+        markets = data.get("markets", []) if isinstance(data, dict) else []
+    except Exception:
+        markets = []
+
+    # 2) Scan all open markets for anything Bitcoin-ish.
+    if not markets:
+        try:
+            data = client.get_markets(limit=200, status="open")
+            all_markets = data.get("markets", []) if isinstance(data, dict) else []
+        except Exception as e:
+            print(f"{BAD} Could not list markets to auto-pick: {e}")
+            return None
+        markets = [
+            m for m in all_markets
+            if str(m.get("ticker", "")).upper().startswith("KXBTC")
+            or "bitcoin" in str(m.get("title", "")).lower()
+        ]
+        # 3) Last resort: most active open market of any kind.
+        if not markets:
+            if all_markets:
+                m = max(all_markets, key=_activity)
+                print(f"{WARN} No BTC markets on demo; using most active open market:")
+                print(f"    {m.get('ticker')}  ({str(m.get('title',''))[:45]})")
+                return m.get("ticker")
+            print(f"{BAD} No open markets found on the demo exchange.")
+            return None
+
+    best = max(markets, key=_activity)
+    print(f"{OK} Auto-picked BTC market: {best.get('ticker')}  ({str(best.get('title',''))[:45]})")
+    return best.get("ticker")
 
 
 def _load_dotenv():
@@ -131,7 +191,8 @@ def main():
     parser.add_argument("--list-markets", action="store_true", help="list open demo markets")
     parser.add_argument("--place-test-order", action="store_true",
                         help="place a far-from-market test order and cancel it")
-    parser.add_argument("--ticker", help="market ticker for --place-test-order")
+    parser.add_argument("--ticker", help="ticker for --place-test-order (optional; "
+                        "auto-picks an open BTC market if omitted)")
     args = parser.parse_args()
 
     _load_dotenv()
@@ -148,10 +209,12 @@ def main():
         print()
         if not authed:
             print(f"{BAD} Skipping order test - auth did not pass.")
-        elif not args.ticker:
-            print(f"{BAD} --place-test-order requires --ticker (try --list-markets first).")
         else:
-            place_and_cancel(client, args.ticker)
+            ticker = args.ticker or pick_btc_market(client)
+            if ticker:
+                place_and_cancel(client, ticker)
+            else:
+                print(f"{BAD} No ticker to test with (pass --ticker explicitly).")
 
     print("-" * 42)
     if reachable and authed:

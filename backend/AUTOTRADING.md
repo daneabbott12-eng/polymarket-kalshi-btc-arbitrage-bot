@@ -34,8 +34,8 @@ Before running TESTNET mode, confirm your demo keys work:
 ```bash
 cd backend
 python smoke_test_kalshi.py                       # host + signing + balance
-python smoke_test_kalshi.py --list-markets        # find a ticker
-python smoke_test_kalshi.py --place-test-order --ticker <TICKER>   # place + cancel
+python smoke_test_kalshi.py --place-test-order    # auto-picks a BTC market, place + cancel
+python smoke_test_kalshi.py --list-markets        # (optional) browse markets yourself
 ```
 
 `[OK] Auth OK ... Demo balance: $X` means you're ready. A `401` means the demo
