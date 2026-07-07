@@ -87,6 +87,10 @@ class PaperTrader:
         self._save()
         return trade
 
+    def committed_capital(self):
+        """Cost basis tied up in still-open paper positions."""
+        return sum(t["cost_basis"] for t in self.trades if t["status"] == "open")
+
     def settle_due(self, now_utc):
         """Mark open trades settled once their hour has passed. Because each
         trade is a guaranteed-$1 pair, realized P&L equals the expected P&L."""

@@ -80,6 +80,9 @@ interface PaperSummary {
   expected_net_pnl: number
   risk_adj_net_pnl: number
   realized_net_pnl: number
+  real_balance?: number
+  committed_capital?: number
+  available_capital?: number
 }
 
 interface KalshiAccount {
@@ -589,6 +592,13 @@ export default function Dashboard() {
                   }`}>{s.value}</div>
                 </div>
               ))}
+            </div>
+          )}
+          {data.paper?.real_balance != null && (
+            <div className="text-xs mb-3 px-3 py-2 rounded-md bg-blue-50 border border-blue-100 text-blue-800">
+              Buying power: <span className="font-mono font-semibold">${(data.paper.available_capital ?? 0).toFixed(2)}</span>
+              {" "}(real balance ${data.paper.real_balance.toFixed(2)} − ${(data.paper.committed_capital ?? 0).toFixed(2)} committed).
+              Paper trades are sized to fit this.
             </div>
           )}
           <div className="text-[11px] text-muted-foreground mb-4">

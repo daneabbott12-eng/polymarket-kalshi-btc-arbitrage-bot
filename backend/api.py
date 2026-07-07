@@ -8,6 +8,7 @@ from clients.kalshi_readonly_client import KalshiReadOnlyClient
 import datetime
 import math
 import os
+import time
 from load_env import load_dotenv
 
 load_dotenv()  # pull backend/.env into the environment before reading config
@@ -326,6 +327,10 @@ def get_arbitrage_data():
     # tradeable markets (lowest combined best-ask cost). The best ask is only the
     # top level; filling TARGET_CONTRACTS sweeps deeper, worse levels, so the true
     # margin degrades with size. Capped at a few markets to bound API calls.
+    # If a live account is connected, cap paper sizes to what it could afford:
+    # available = real balance - capital already committed to open paper trades.
+    real_balance = get_real_balance_dollars()
+
     ticker_by_strike = {m['strike']: m.get('ticker') for m in selected_markets}
     tradeable = [c for c in response["checks"] if c["poly_cost"] > 0 and c["kalshi_cost"] > 0]
     tradeable.sort(key=lambda c: c["total_cost"])
@@ -340,24 +345,41 @@ def get_arbitrage_data():
         if not execu:
             continue
         check["execution"] = execu
-        if execu["is_arbitrage_at_size"]:
-            trade = PT.record(
-                window=window, settle_time=settle_time,
-                kalshi_strike=check["kalshi_strike"],
-                poly_leg=check["poly_leg"], kalshi_leg=check["kalshi_leg"],
-                size=execu["fill_size"],
-                avg_poly_cost=execu["avg_poly_cost"],
-                avg_kalshi_cost=execu["avg_kalshi_cost"],
-                fee_per_contract=execu["fee_per_contract"],
-                slippage_per_leg=execu["slippage_per_leg"],
-                risk_adj_net_per_contract=execu["risk_adj_net_margin"],
-                timestamp=response["timestamp"],
-            )
-            check["paper_trade_recorded"] = trade is not None
+        if not execu["is_arbitrage_at_size"]:
+            continue
+
+        # Cost to enter one contract (both legs + slippage + Kalshi fee).
+        cost_per_contract = (execu["avg_poly_cost"] + execu["avg_kalshi_cost"]
+                             + execu["total_slippage"] + execu["fee_per_contract"])
+        size, capped = cap_size_to_budget(
+            execu["fill_size"], cost_per_contract, real_balance, PT.committed_capital()
+        )
+        execu["capped_by_balance"] = capped
+        if size < MIN_CONTRACTS:
+            continue  # can't afford even one contract right now
+
+        trade = PT.record(
+            window=window, settle_time=settle_time,
+            kalshi_strike=check["kalshi_strike"],
+            poly_leg=check["poly_leg"], kalshi_leg=check["kalshi_leg"],
+            size=size,
+            avg_poly_cost=execu["avg_poly_cost"],
+            avg_kalshi_cost=execu["avg_kalshi_cost"],
+            fee_per_contract=execu["fee_per_contract"],
+            slippage_per_leg=execu["slippage_per_leg"],
+            risk_adj_net_per_contract=execu["risk_adj_net_margin"],
+            timestamp=response["timestamp"],
+        )
+        check["paper_trade_recorded"] = trade is not None
 
     # Settle any paper trades whose hour has passed, and attach a summary.
     PT.settle_due(datetime.datetime.now(datetime.timezone.utc))
-    response["paper"] = PT.summary()
+    summary = PT.summary()
+    if real_balance is not None:
+        summary["real_balance"] = round(real_balance, 2)
+        summary["committed_capital"] = round(PT.committed_capital(), 2)
+        summary["available_capital"] = round(real_balance - PT.committed_capital(), 2)
+    response["paper"] = summary
 
     return response
 
@@ -386,6 +408,40 @@ def _get_kalshi_readonly():
     if not kid or not pem:
         return None
     return KalshiReadOnlyClient(kid, pem)
+
+# Cache the real balance so the 1s /arbitrage polling doesn't hammer production.
+_balance_cache = {"value": None, "ts": 0.0}
+BALANCE_TTL_SECONDS = 30.0
+
+def cap_size_to_budget(fill_size, cost_per_contract, real_balance, committed):
+    """Cap a fill size to what the real balance can afford after open positions.
+
+    Returns (size, capped). If no balance is known, returns the size unchanged.
+    """
+    if real_balance is None or cost_per_contract <= 0:
+        return fill_size, False
+    available = max(0.0, real_balance - committed)
+    affordable = available / cost_per_contract
+    size = min(fill_size, affordable)
+    return size, size < fill_size
+
+def get_real_balance_dollars():
+    """Real Kalshi balance in dollars (cached), or None if no prod account."""
+    client = _get_kalshi_readonly()
+    if client is None:
+        return None
+    now = time.time()
+    if _balance_cache["value"] is not None and now - _balance_cache["ts"] < BALANCE_TTL_SECONDS:
+        return _balance_cache["value"]
+    try:
+        bal = client.get_balance()
+        cents = bal.get("balance") if isinstance(bal, dict) else None
+        value = cents / 100.0 if isinstance(cents, (int, float)) else None
+        _balance_cache["value"] = value
+        _balance_cache["ts"] = now
+        return value
+    except Exception:
+        return _balance_cache["value"]  # fall back to last known good
 
 @app.get("/account/kalshi")
 def kalshi_account():
