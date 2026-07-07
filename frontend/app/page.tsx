@@ -82,6 +82,16 @@ interface PaperSummary {
   realized_net_pnl: number
 }
 
+interface AutoStatus {
+  mode: string
+  armed: boolean
+  arm_flag: boolean
+  has_credentials: boolean
+  max_order_contracts: number
+  max_open_positions: number
+  open_positions: number
+}
+
 interface PaperTrade {
   timestamp: string
   window: string
@@ -103,6 +113,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([])
+  const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null)
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -131,6 +142,15 @@ export default function Dashboard() {
     }
   }
 
+  const fetchAutoStatus = async () => {
+    try {
+      const res = await fetch("/api/auto/status")
+      setAutoStatus(await res.json())
+    } catch (err) {
+      console.error("Failed to fetch auto status", err)
+    }
+  }
+
   const simulatePaperTrade = async () => {
     await fetch("/api/paper/simulate", { method: "POST" })
     fetchPaperTrades()
@@ -146,11 +166,13 @@ export default function Dashboard() {
     // Initial fetch
     fetchData()
     fetchPaperTrades()
+    fetchAutoStatus()
 
     // Setup polling
     const interval = setInterval(() => {
       fetchData()
       fetchPaperTrades()
+      fetchAutoStatus()
     }, 1000)
 
     return () => clearInterval(interval)
@@ -173,6 +195,17 @@ export default function Dashboard() {
             <span className="w-2 h-2 rounded-full bg-green-500 mr-2"></span>
             Live
           </Badge>
+          {autoStatus && (
+            <Badge
+              variant="outline"
+              className={autoStatus.mode === "LIVE"
+                ? "bg-red-100 text-red-800 border-red-300"
+                : "bg-slate-100 text-slate-600 border-slate-300"}
+              title={`Auto-execution: ${autoStatus.mode}. Max ${autoStatus.max_order_contracts} contracts/order.`}
+            >
+              {autoStatus.mode === "LIVE" ? "⚠ LIVE TRADING" : "Auto: DRY-RUN"}
+            </Badge>
+          )}
         </div>
         <div className="text-sm text-muted-foreground">
           Last updated: {lastUpdated.toLocaleTimeString()}

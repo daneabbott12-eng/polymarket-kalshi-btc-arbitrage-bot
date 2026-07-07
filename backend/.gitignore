@@ -1,2 +1,6 @@
 .venv/
 paper_trades.json
+opportunities.log
+# Never commit real credentials / local config
+.env
+.env.local

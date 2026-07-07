@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fetch_current_polymarket import fetch_polymarket_data_struct
 from fetch_current_kalshi import fetch_kalshi_data_struct, get_orderbook_ask_ladders
 from paper_trader import PaperTrader
+from execution_engine import ExecutionEngine
 import datetime
 import math
 import os
@@ -169,6 +170,8 @@ def evaluate_check(check):
 
 # Single shared paper-trading ledger for the process.
 PT = PaperTrader()
+# Execution engine (DRY_RUN unless explicitly armed with credentials).
+ENGINE = ExecutionEngine()
 
 @app.get("/arbitrage")
 def get_arbitrage_data():
@@ -361,6 +364,11 @@ def get_paper_summary():
 def reset_paper_trades():
     PT.reset()
     return {"status": "ok", "summary": PT.summary()}
+
+@app.get("/auto/status")
+def auto_status():
+    """Execution mode for the auto-runner: DRY_RUN unless live trading is armed."""
+    return ENGINE.status()
 
 @app.post("/paper/simulate")
 def simulate_paper_trade():
