@@ -43,6 +43,19 @@ API is reachable but rejected the credentials (check key id / private key / cloc
 skew). The order test places a 1-contract order priced far from the market so it
 rests without filling, then cancels it.
 
+And for the Polymarket Amoy testnet leg (`pip install py-clob-client` first):
+
+```bash
+python smoke_test_polymarket.py                                  # key + lib + address + health + auth
+python smoke_test_polymarket.py --place-test-order --token-id <TOKEN_ID>
+```
+
+It checks the wallet key format, derives your wallet address, health-checks the
+CLOB, and derives API creds. Note: the Amoy CLOB host in
+`clients/polymarket_client.py` is a **placeholder** - the health check will fail
+until you set the correct host from Polymarket's docs, and Amoy liquidity is
+typically nil.
+
 ## Running on testnet (fake funds)
 
 1. `pip install -r requirements.txt` (adds `cryptography`) and

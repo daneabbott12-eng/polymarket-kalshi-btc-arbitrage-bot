@@ -39,11 +39,13 @@ class PolymarketTestnetClient:
         self.chain_id = chain_id
         self._wallet_private_key = wallet_private_key
         self._api_creds = api_creds
-        self._client = None
+        self._bare = None      # constructed client, no L2 creds (reads/health)
+        self._client = None    # client with L2 creds (signed order posting)
 
-    def _get_client(self):
-        if self._client is not None:
-            return self._client
+    def _construct(self):
+        """Build the CLOB client WITHOUT deriving API creds (no auth needed)."""
+        if self._bare is not None:
+            return self._bare
         try:
             from py_clob_client.client import ClobClient
         except ImportError as e:
@@ -51,15 +53,37 @@ class PolymarketTestnetClient:
                 "py-clob-client is not installed. Run: pip install py-clob-client"
             ) from e
         # Guard again in case host was overridden to a mainnet endpoint.
-        if "polymarket.com" in self.host and "testnet" not in self.host and self.chain_id != AMOY_CHAIN_ID:
-            raise ValueError("Refusing non-testnet host/chain combination.")
-        self._client = ClobClient(
+        if self.chain_id == POLYGON_MAINNET_CHAIN_ID:
+            raise ValueError("Refusing Polygon mainnet (chain 137).")
+        self._bare = ClobClient(
             self.host, key=self._wallet_private_key, chain_id=self.chain_id
         )
-        # Derive/attach L2 API credentials for signed order posting.
-        creds = self._api_creds or self._client.create_or_derive_api_creds()
-        self._client.set_api_creds(creds)
-        return self._client
+        return self._bare
+
+    def _get_client(self):
+        """Client with L2 API creds attached, for signed order posting."""
+        if self._client is not None:
+            return self._client
+        client = self._construct()
+        creds = self._api_creds or client.create_or_derive_api_creds()
+        client.set_api_creds(creds)
+        self._client = client
+        return client
+
+    # -- read-only helpers (used by the smoke test) -------------------------
+    def wallet_address(self):
+        """Signer address derived from the private key. No network call."""
+        return self._construct().get_address()
+
+    def server_ok(self):
+        """CLOB health check. Returns the server's response (no auth)."""
+        return self._construct().get_ok()
+
+    def get_order_book(self, token_id):
+        return self._construct().get_order_book(token_id)
+
+    def cancel_order(self, order_id):
+        return self._get_client().cancel(order_id)
 
     def place_limit_order(self, *, token_id, side, size, price):
         """Place a limit order on the Amoy TESTNET CLOB.
