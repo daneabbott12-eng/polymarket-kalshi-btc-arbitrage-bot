@@ -41,29 +41,34 @@ def get_clob_price(token_id):
         response = requests.get(CLOB_API_URL, params={"token_id": token_id})
         response.raise_for_status()
         data = response.json()
-        
+
         # data structure: {'bids': [{'price': '0.38', 'size': '...'}, ...], 'asks': ...}
         bids = data.get('bids', [])
         asks = data.get('asks', [])
-        
+
         best_bid = 0.0
         best_ask = 0.0
-        
+
         if bids:
             # Bids: We want the HIGHEST price someone is willing to pay
             best_bid = max(float(b['price']) for b in bids)
-            
-        best_ask_size = 0.0
-        if asks:
-            # Asks: We want the LOWEST price someone is willing to sell for
-            best_ask = min(float(a['price']) for a in asks)
-            # Sum the depth (shares) resting at that best-ask price level
-            best_ask_size = sum(
-                float(a['size']) for a in asks if float(a['price']) == best_ask
-            )
 
-        # Return (buy price, depth available at that price)
-        return (best_ask, best_ask_size) if best_ask > 0 else (0.0, 0.0)
+        # Full ask ladder (price ascending) so callers can walk depth to fill a
+        # target size, not just assume everything fills at the best ask.
+        ask_ladder = sorted(
+            ([float(a['price']), float(a['size'])] for a in asks),
+            key=lambda level: level[0]
+        )
+
+        best_ask_size = 0.0
+        if ask_ladder:
+            best_ask = ask_ladder[0][0]
+            # Sum the depth (shares) resting at that best-ask price level
+            best_ask_size = sum(sz for px, sz in ask_ladder if px == best_ask)
+
+        if best_ask > 0:
+            return {"best_ask": best_ask, "best_ask_size": best_ask_size, "asks": ask_ladder}
+        return {"best_ask": 0.0, "best_ask_size": 0.0, "asks": []}
     except Exception as e:
         return None
 
@@ -95,20 +100,22 @@ def get_polymarket_data(slug):
         # 2. Fetch Price for each Token from CLOB
         prices = {}
         sizes = {}
+        books = {}   # full ask ladder per outcome: [[price, size], ...]
         # Assuming order is [Up, Down] or matches outcomes
         # Usually outcomes are ["Up", "Down"] and clobTokenIds correspond.
 
         for outcome, token_id in zip(outcomes, clob_token_ids):
             result = get_clob_price(token_id)
             if result is not None:
-                price, size = result
-                prices[outcome] = price
-                sizes[outcome] = size
+                prices[outcome] = result["best_ask"]
+                sizes[outcome] = result["best_ask_size"]
+                books[outcome] = result["asks"]
             else:
                 prices[outcome] = 0.0
                 sizes[outcome] = 0.0
+                books[outcome] = []
 
-        return (prices, sizes), None
+        return (prices, sizes, books), None
     except Exception as e:
         return None, str(e)
 
@@ -178,13 +185,14 @@ def fetch_polymarket_data_struct():
         if poly_err:
             return None, f"Polymarket Error: {poly_err}"
 
-        poly_prices, poly_sizes = poly_result
+        poly_prices, poly_sizes, poly_books = poly_result
 
         return {
             "price_to_beat": price_to_beat,
             "current_price": current_price,
             "prices": poly_prices, # {'Up': 0.xx, 'Down': 0.xx}
             "sizes": poly_sizes,   # {'Up': shares, 'Down': shares} depth at best ask
+            "books": poly_books,   # {'Up': [[price,size],...], 'Down': [...]} ask ladder
             "slug": slug,
             "target_time_utc": target_time_utc
         }, None

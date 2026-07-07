@@ -42,6 +42,35 @@ def get_kalshi_markets(event_ticker):
     except Exception as e:
         return None, str(e)
 
+KALSHI_ORDERBOOK_URL = "https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook"
+
+def get_orderbook_ask_ladders(ticker, depth=10):
+    """Return the ask ladders (price ascending) to BUY yes and BUY no.
+
+    Kalshi's orderbook lists resting BIDS: `yes_dollars` are YES bids and
+    `no_dollars` are NO bids. Taking liquidity crosses the opposite side:
+      - To BUY YES you lift NO bids  -> yes ask price = 1 - no_bid_price
+      - To BUY NO  you lift YES bids -> no  ask price = 1 - yes_bid_price
+    Size carries over unchanged. Returns {'yes': [[price,size],...], 'no': [...]}.
+    """
+    try:
+        url = KALSHI_ORDERBOOK_URL.format(ticker=ticker)
+        response = requests.get(url, params={"depth": depth})
+        response.raise_for_status()
+        ob = response.json().get("orderbook_fp", {}) or {}
+        no_bids = ob.get("no_dollars") or []
+        yes_bids = ob.get("yes_dollars") or []
+
+        def to_ask_ladder(bids):
+            ladder = [[1.0 - _to_float(p), _to_float(s)] for p, s in bids]
+            # Best (cheapest) ask first
+            ladder.sort(key=lambda level: level[0])
+            return ladder
+
+        return {"yes": to_ask_ladder(no_bids), "no": to_ask_ladder(yes_bids)}, None
+    except Exception as e:
+        return {"yes": [], "no": []}, str(e)
+
 def parse_strike(subtitle):
     # Format: "$96,250 or above"
     # Extract number, remove commas
@@ -93,6 +122,7 @@ def fetch_kalshi_data_struct():
 
                 market_data.append({
                     'strike': strike,
+                    'ticker': m.get('ticker'),
                     'yes_bid': yes_bid_c,
                     'yes_ask': yes_ask_c,
                     'no_bid': no_bid_c,

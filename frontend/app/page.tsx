@@ -31,6 +31,19 @@ interface MarketData {
   checks: Array<Check>
   opportunities: Array<Check>
   errors: string[]
+  paper?: PaperSummary
+}
+
+interface Execution {
+  target_size: number
+  fill_size: number
+  avg_poly_cost: number
+  avg_kalshi_cost: number
+  total_cost_at_size: number
+  fee_per_contract: number
+  net_margin_at_size: number
+  total_net_pnl: number
+  is_arbitrage_at_size: boolean
 }
 
 interface Check {
@@ -49,12 +62,37 @@ interface Check {
   net_margin: number
   is_arbitrage: boolean
   margin: number
+  execution?: Execution | null
+}
+
+interface PaperSummary {
+  total_trades: number
+  open: number
+  settled: number
+  total_invested: number
+  expected_net_pnl: number
+  realized_net_pnl: number
+}
+
+interface PaperTrade {
+  timestamp: string
+  window: string
+  kalshi_strike: number
+  poly_leg: string
+  kalshi_leg: string
+  size: number
+  cost_basis: number
+  net_margin_per_contract: number
+  expected_net_pnl: number
+  status: string
+  realized_pnl: number | null
 }
 
 export default function Dashboard() {
   const [data, setData] = useState<MarketData | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
+  const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([])
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -73,14 +111,36 @@ export default function Dashboard() {
     }
   }
 
+  const fetchPaperTrades = async () => {
+    try {
+      const res = await fetch("/api/paper/trades")
+      const json = await res.json()
+      setPaperTrades(json.trades || [])
+    } catch (err) {
+      console.error("Failed to fetch paper trades", err)
+    }
+  }
+
+  const simulatePaperTrade = async () => {
+    await fetch("/api/paper/simulate", { method: "POST" })
+    fetchPaperTrades()
+  }
+
+  const resetPaperTrades = async () => {
+    await fetch("/api/paper/reset", { method: "POST" })
+    fetchPaperTrades()
+  }
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     // Initial fetch
     fetchData()
+    fetchPaperTrades()
 
     // Setup polling
     const interval = setInterval(() => {
       fetchData()
+      fetchPaperTrades()
     }, 1000)
 
     return () => clearInterval(interval)
@@ -325,6 +385,16 @@ export default function Dashboard() {
                           className="h-2"
                           indicatorClassName={isArb ? "bg-green-500" : "bg-slate-400"}
                         />
+                        {check.execution && (
+                          <div className="text-[11px] mt-0.5">
+                            <span className="text-muted-foreground">
+                              @ {Math.floor(check.execution.fill_size)} filled: VWAP ${check.execution.total_cost_at_size.toFixed(3)} →{" "}
+                            </span>
+                            <span className={check.execution.net_margin_at_size > 0 ? "text-green-600 font-medium" : "text-red-500"}>
+                              {check.execution.net_margin_at_size > 0 ? "+" : ""}${check.execution.net_margin_at_size.toFixed(3)}/ct net
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell className="text-right font-mono font-bold">
@@ -347,6 +417,89 @@ export default function Dashboard() {
               })}
             </TableBody>
           </Table>
+        </CardContent>
+      </Card>
+
+      {/* Paper Trading */}
+      <Card>
+        <CardHeader>
+          <div className="flex justify-between items-start gap-4 flex-wrap">
+            <div>
+              <CardTitle>Paper Trading</CardTitle>
+              <CardDescription>
+                Simulated fills — no real orders, no funds moved. Confirmed opportunities are auto-recorded; use Simulate to test.
+              </CardDescription>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={simulatePaperTrade}
+                className="text-xs px-3 py-1.5 rounded-md bg-slate-800 text-white hover:bg-slate-700"
+              >
+                Simulate Trade
+              </button>
+              <button
+                onClick={resetPaperTrades}
+                className="text-xs px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-100"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {data.paper && (
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+              {[
+                { label: "Trades", value: data.paper.total_trades },
+                { label: "Open", value: data.paper.open },
+                { label: "Settled", value: data.paper.settled },
+                { label: "Invested", value: `$${data.paper.total_invested.toFixed(2)}` },
+                { label: "Net P&L (exp.)", value: `$${data.paper.expected_net_pnl.toFixed(2)}`, good: true },
+              ].map((s) => (
+                <div key={s.label} className="bg-slate-100 p-3 rounded-md">
+                  <div className="text-xs text-muted-foreground uppercase font-bold">{s.label}</div>
+                  <div className={`text-xl font-mono font-semibold ${s.good ? "text-green-700" : ""}`}>{s.value}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {paperTrades.length === 0 ? (
+            <div className="text-center text-sm text-muted-foreground p-4 border border-dashed rounded-md">
+              No paper trades yet. Genuine opportunities are recorded automatically, or click “Simulate Trade” to test the ledger.
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Strategy</TableHead>
+                  <TableHead className="text-right">Size</TableHead>
+                  <TableHead className="text-right">Invested</TableHead>
+                  <TableHead className="text-right">Net / ct</TableHead>
+                  <TableHead className="text-right">Exp. P&L</TableHead>
+                  <TableHead className="text-right">Status</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {paperTrades.slice().reverse().map((t, i) => (
+                  <TableRow key={i}>
+                    <TableCell className="text-xs">
+                      P-{t.poly_leg} + K-{t.kalshi_leg} <span className="text-muted-foreground">(${t.kalshi_strike.toLocaleString()})</span>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-xs">{t.size}</TableCell>
+                    <TableCell className="text-right font-mono text-xs">${t.cost_basis.toFixed(2)}</TableCell>
+                    <TableCell className="text-right font-mono text-xs text-green-600">+${t.net_margin_per_contract.toFixed(3)}</TableCell>
+                    <TableCell className="text-right font-mono text-xs font-semibold text-green-700">+${t.expected_net_pnl.toFixed(2)}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant="outline" className={t.status === "settled" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-amber-50 text-amber-700 border-amber-200"}>
+                        {t.status}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
         </CardContent>
       </Card>
     </div>
