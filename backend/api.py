@@ -64,7 +64,7 @@ TARGET_CONTRACTS = _env_float("ARB_TARGET_CONTRACTS", 100.0)
 # When a live balance IS connected, scale the target with buying power: deploy up
 # to this fraction of available capital per opportunity (an arb pair costs ~$1 to
 # enter). So the target grows as the account grows, up to a hard ceiling.
-CAPITAL_FRACTION = _env_float("ARB_CAPITAL_FRACTION", 0.5)
+CAPITAL_FRACTION = _env_float("ARB_CAPITAL_FRACTION", 0.02)
 MAX_TARGET_CONTRACTS = _env_float("ARB_MAX_TARGET_CONTRACTS", 1000.0)
 EST_COST_PER_CONTRACT = 1.0  # $1 payoff pair; conservative sizing estimate
 
