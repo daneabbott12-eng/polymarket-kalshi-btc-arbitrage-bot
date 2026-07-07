@@ -5,6 +5,15 @@ from fetch_current_kalshi import fetch_kalshi_data_struct, get_orderbook_ask_lad
 from paper_trader import PaperTrader
 import datetime
 import math
+import os
+
+def _env_float(name, default):
+    """Read a float from the environment, falling back to `default` if unset or
+    unparseable. Lets the model be tuned without editing code (see .env.example)."""
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
 
 app = FastAPI()
 
@@ -21,15 +30,15 @@ app.add_middleware(
 # call something a real opportunity. A book can show a tempting ask with only a
 # sliver of size behind it; below this floor the "arbitrage" isn't worth acting
 # on and is usually just noise.
-MIN_CONTRACTS = 1.0
+MIN_CONTRACTS = _env_float("ARB_MIN_CONTRACTS", 1.0)
 
 # Trading fees. Polymarket charges no trading fee on CLOB fills. Kalshi charges a
 # per-contract trading fee of ceil(0.07 * C * P * (1-P)) where P is the execution
 # price in dollars -- largest near P=0.50, shrinking toward 0/1. Rate is a
 # constant so it is easy to update if the published schedule changes.
 # Ref: https://kalshi.com/docs/kalshi-fee-schedule.pdf
-KALSHI_FEE_RATE = 0.07
-POLYMARKET_FEE_RATE = 0.0
+KALSHI_FEE_RATE = _env_float("ARB_KALSHI_FEE_RATE", 0.07)
+POLYMARKET_FEE_RATE = _env_float("ARB_POLYMARKET_FEE_RATE", 0.0)
 
 def kalshi_trading_fee(price, contracts=1.0):
     """Kalshi trading fee for `contracts` at execution `price` (dollars).
@@ -43,7 +52,7 @@ def kalshi_trading_fee(price, contracts=1.0):
 # Target trade size (contracts) for the realistic-fill analysis. The best ask is
 # only the top of the book; filling a real order walks deeper and worse levels,
 # so the average price -- and the true margin -- degrades with size.
-TARGET_CONTRACTS = 100.0
+TARGET_CONTRACTS = _env_float("ARB_TARGET_CONTRACTS", 100.0)
 
 # Execution-risk model (slippage + leg risk). The order-book walk gives the price
 # you would get if the book stood still and both legs filled instantly. Reality:
@@ -54,9 +63,9 @@ TARGET_CONTRACTS = 100.0
 #  - LEG_RISK_LOSS: if a leg is left naked, you unwind it at a loss (spread +
 #    adverse move) of roughly this much per contract.
 # All tunable; defaults are deliberately conservative for a fast hourly market.
-SLIPPAGE_PER_LEG = 0.005       # dollars given up per leg (~0.5 cent)
-LEG_FILL_PROBABILITY = 0.90    # chance BOTH legs complete as intended
-LEG_RISK_LOSS = 0.05           # dollars lost per contract when a leg goes naked
+SLIPPAGE_PER_LEG = _env_float("ARB_SLIPPAGE_PER_LEG", 0.005)       # $ per leg (~0.5 cent)
+LEG_FILL_PROBABILITY = _env_float("ARB_LEG_FILL_PROBABILITY", 0.90) # chance both legs fill
+LEG_RISK_LOSS = _env_float("ARB_LEG_RISK_LOSS", 0.05)              # $ lost per naked leg
 
 def walk_book(ask_ladder, target_size):
     """Walk an ascending ask ladder to fill `target_size`.
