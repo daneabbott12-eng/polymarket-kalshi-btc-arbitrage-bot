@@ -57,8 +57,27 @@ def kalshi_trading_fee(price, contracts=1.0):
 
 # Target trade size (contracts) for the realistic-fill analysis. The best ask is
 # only the top of the book; filling a real order walks deeper and worse levels,
-# so the average price -- and the true margin -- degrades with size.
+# so the average price -- and the true margin -- degrades with size. Used as the
+# fixed default when no live balance is connected.
 TARGET_CONTRACTS = _env_float("ARB_TARGET_CONTRACTS", 100.0)
+
+# When a live balance IS connected, scale the target with buying power: deploy up
+# to this fraction of available capital per opportunity (an arb pair costs ~$1 to
+# enter). So the target grows as the account grows, up to a hard ceiling.
+CAPITAL_FRACTION = _env_float("ARB_CAPITAL_FRACTION", 0.5)
+MAX_TARGET_CONTRACTS = _env_float("ARB_MAX_TARGET_CONTRACTS", 1000.0)
+EST_COST_PER_CONTRACT = 1.0  # $1 payoff pair; conservative sizing estimate
+
+def compute_target_contracts(real_balance, committed):
+    """Target contracts to size an opportunity for.
+
+    Fixed default when no balance is connected; otherwise scales with available
+    buying power (balance minus open commitments), clamped to [MIN, MAX]."""
+    if real_balance is None:
+        return TARGET_CONTRACTS
+    available = max(0.0, real_balance - committed)
+    scaled = available * CAPITAL_FRACTION / EST_COST_PER_CONTRACT
+    return max(MIN_CONTRACTS, min(scaled, MAX_TARGET_CONTRACTS))
 
 # Execution-risk model (slippage + leg risk). The order-book walk gives the price
 # you would get if the book stood still and both legs filled instantly. Reality:
@@ -330,6 +349,8 @@ def get_arbitrage_data():
     # If a live account is connected, cap paper sizes to what it could afford:
     # available = real balance - capital already committed to open paper trades.
     real_balance = get_real_balance_dollars()
+    # Scale the target trade size with buying power (fixed default otherwise).
+    target_contracts = compute_target_contracts(real_balance, PT.committed_capital())
 
     ticker_by_strike = {m['strike']: m.get('ticker') for m in selected_markets}
     tradeable = [c for c in response["checks"] if c["poly_cost"] > 0 and c["kalshi_cost"] > 0]
@@ -341,7 +362,7 @@ def get_arbitrage_data():
         ladders, _ = get_orderbook_ask_ladders(ticker)
         kalshi_ladder = ladders["yes"] if check["kalshi_leg"] == "Yes" else ladders["no"]
         poly_ladder = poly_books.get(check["poly_leg"], [])
-        execu = execution_at_size(poly_ladder, kalshi_ladder, TARGET_CONTRACTS)
+        execu = execution_at_size(poly_ladder, kalshi_ladder, target_contracts)
         if not execu:
             continue
         check["execution"] = execu
