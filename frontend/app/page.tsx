@@ -28,29 +28,24 @@ interface MarketData {
       subtitle: string
     }>
   }
-  checks: Array<{
-    kalshi_strike: number
-    type: string
-    poly_leg: string
-    kalshi_leg: string
-    poly_cost: number
-    kalshi_cost: number
-    total_cost: number
-    is_arbitrage: boolean
-    margin: number
-  }>
-  opportunities: Array<{
-    kalshi_strike: number
-    type: string
-    poly_leg: string
-    kalshi_leg: string
-    poly_cost: number
-    kalshi_cost: number
-    total_cost: number
-    is_arbitrage: boolean
-    margin: number
-  }>
+  checks: Array<Check>
+  opportunities: Array<Check>
   errors: string[]
+}
+
+interface Check {
+  kalshi_strike: number
+  type: string
+  poly_leg: string
+  kalshi_leg: string
+  poly_cost: number
+  kalshi_cost: number
+  total_cost: number
+  poly_size: number
+  kalshi_size: number
+  max_size: number
+  is_arbitrage: boolean
+  margin: number
 }
 
 export default function Dashboard() {
@@ -159,6 +154,10 @@ export default function Dashboard() {
                 <div className="pt-2 border-t border-dashed border-slate-200 flex justify-between font-bold">
                   <span>Total Cost</span>
                   <span>${bestOpp.total_cost.toFixed(3)}</span>
+                </div>
+                <div className="flex justify-between text-xs text-muted-foreground mt-2">
+                  <span>Executable Depth</span>
+                  <span className="font-mono">~{Math.floor(bestOpp.max_size).toLocaleString()} contracts</span>
                 </div>
               </div>
             </div>
@@ -272,16 +271,20 @@ export default function Dashboard() {
                 <TableHead>Strategy</TableHead>
                 <TableHead>Cost Analysis</TableHead>
                 <TableHead className="text-right">Total Cost</TableHead>
+                <TableHead className="text-right">Depth</TableHead>
                 <TableHead className="text-right">Result</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {data.checks.map((check, i) => {
-                const isProfitable = check.total_cost < 1.00
+                // A row is a genuine opportunity only if the backend confirmed it
+                // (both legs tradeable, enough depth, total < $1.00) -- NOT merely
+                // total_cost < 1.00, which an empty/illiquid leg can fake.
+                const isArb = check.is_arbitrage
                 const percentCost = Math.min(check.total_cost * 100, 100)
 
                 return (
-                  <TableRow key={i} className={isProfitable ? "bg-green-50/50" : ""}>
+                  <TableRow key={i} className={isArb ? "bg-green-50/50" : ""}>
                     <TableCell>
                       <Badge variant="outline" className="whitespace-nowrap">
                         {check.type.replace("Poly", "P").replace("Kalshi", "K")}
@@ -305,15 +308,18 @@ export default function Dashboard() {
                         <Progress
                           value={percentCost}
                           className="h-2"
-                          indicatorClassName={isProfitable ? "bg-green-500" : "bg-slate-400"}
+                          indicatorClassName={isArb ? "bg-green-500" : "bg-slate-400"}
                         />
                       </div>
                     </TableCell>
                     <TableCell className="text-right font-mono font-bold">
                       ${check.total_cost.toFixed(3)}
                     </TableCell>
+                    <TableCell className="text-right font-mono text-xs text-muted-foreground">
+                      {Math.floor(check.max_size).toLocaleString()}
+                    </TableCell>
                     <TableCell className="text-right">
-                      {isProfitable ? (
+                      {isArb ? (
                         <Badge className="bg-green-600 hover:bg-green-700 whitespace-nowrap">
                           +${check.margin.toFixed(3)}
                         </Badge>

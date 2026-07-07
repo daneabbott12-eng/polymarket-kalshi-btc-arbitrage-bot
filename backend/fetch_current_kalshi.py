@@ -3,6 +3,7 @@ import datetime
 import pytz
 import re
 from get_current_markets import get_current_market_urls
+from fetch_current_polymarket import _kraken_current_price
 
 # Configuration
 KALSHI_API_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
@@ -16,7 +17,20 @@ def get_binance_current_price():
         data = response.json()
         return float(data["price"]), None
     except Exception as e:
-        return None, str(e)
+        # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
+        try:
+            return _kraken_current_price(), None
+        except Exception:
+            return None, str(e)
+
+def _to_float(value):
+    """Kalshi price/size fields may be floats, numeric strings, or None."""
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 def get_kalshi_markets(event_ticker):
     try:
@@ -64,12 +78,27 @@ def fetch_kalshi_data_struct():
         for m in markets:
             strike = parse_strike(m.get('subtitle', ''))
             if strike > 0:
+                # Kalshi now exposes prices in dollars (0.00-1.00) via *_dollars
+                # fields; keep the yes_ask/no_ask values in CENTS (0-100) for the
+                # frontend and arbitrage math, which expect cents.
+                yes_ask_c = round(_to_float(m.get('yes_ask_dollars')) * 100)
+                no_ask_c = round(_to_float(m.get('no_ask_dollars')) * 100)
+                yes_bid_c = round(_to_float(m.get('yes_bid_dollars')) * 100)
+                no_bid_c = round(_to_float(m.get('no_bid_dollars')) * 100)
+
+                # Depth (contracts) available at the best ask on each side.
+                # Buying NO consumes resting YES bids, so NO-ask depth == YES bid size.
+                yes_ask_size = _to_float(m.get('yes_ask_size_fp'))
+                no_ask_size = _to_float(m.get('yes_bid_size_fp'))
+
                 market_data.append({
                     'strike': strike,
-                    'yes_bid': m.get('yes_bid', 0),
-                    'yes_ask': m.get('yes_ask', 0),
-                    'no_bid': m.get('no_bid', 0),
-                    'no_ask': m.get('no_ask', 0),
+                    'yes_bid': yes_bid_c,
+                    'yes_ask': yes_ask_c,
+                    'no_bid': no_bid_c,
+                    'no_ask': no_ask_c,
+                    'yes_ask_size': yes_ask_size,
+                    'no_ask_size': no_ask_size,
                     'subtitle': m.get('subtitle')
                 })
                 

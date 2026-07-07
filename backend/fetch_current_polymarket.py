@@ -12,6 +12,30 @@ SYMBOL = "BTCUSDT"
 
 CLOB_API_URL = "https://clob.polymarket.com/book"
 
+# Fallback price source (Binance geo-blocks some regions with HTTP 451)
+KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
+KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
+KRAKEN_PAIR = "XBTUSDT"
+
+def _kraken_current_price():
+    resp = requests.get(KRAKEN_TICKER_URL, params={"pair": KRAKEN_PAIR})
+    resp.raise_for_status()
+    result = resp.json()["result"]
+    key = next(iter(result))
+    return float(result[key]["c"][0])
+
+def _kraken_open_price(target_time_utc):
+    since = int(target_time_utc.timestamp()) - 3600
+    resp = requests.get(KRAKEN_OHLC_URL, params={"pair": KRAKEN_PAIR, "interval": 60, "since": since})
+    resp.raise_for_status()
+    result = resp.json()["result"]
+    key = next(k for k in result if k != "last")
+    target_ts = int(target_time_utc.timestamp())
+    for row in result[key]:
+        if int(row[0]) == target_ts:
+            return float(row[1])
+    return None
+
 def get_clob_price(token_id):
     try:
         response = requests.get(CLOB_API_URL, params={"token_id": token_id})
@@ -29,11 +53,17 @@ def get_clob_price(token_id):
             # Bids: We want the HIGHEST price someone is willing to pay
             best_bid = max(float(b['price']) for b in bids)
             
+        best_ask_size = 0.0
         if asks:
             # Asks: We want the LOWEST price someone is willing to sell for
             best_ask = min(float(a['price']) for a in asks)
-            
-        return best_ask if best_ask > 0 else 0.0 # Return Ask as the "Buy" price
+            # Sum the depth (shares) resting at that best-ask price level
+            best_ask_size = sum(
+                float(a['size']) for a in asks if float(a['price']) == best_ask
+            )
+
+        # Return (buy price, depth available at that price)
+        return (best_ask, best_ask_size) if best_ask > 0 else (0.0, 0.0)
     except Exception as e:
         return None
 
@@ -64,17 +94,21 @@ def get_polymarket_data(slug):
             
         # 2. Fetch Price for each Token from CLOB
         prices = {}
+        sizes = {}
         # Assuming order is [Up, Down] or matches outcomes
         # Usually outcomes are ["Up", "Down"] and clobTokenIds correspond.
-        
+
         for outcome, token_id in zip(outcomes, clob_token_ids):
-            price = get_clob_price(token_id)
-            if price is not None:
+            result = get_clob_price(token_id)
+            if result is not None:
+                price, size = result
                 prices[outcome] = price
+                sizes[outcome] = size
             else:
                 prices[outcome] = 0.0
-            
-        return prices, None
+                sizes[outcome] = 0.0
+
+        return (prices, sizes), None
     except Exception as e:
         return None, str(e)
 
@@ -85,7 +119,11 @@ def get_binance_current_price():
         data = response.json()
         return float(data["price"]), None
     except Exception as e:
-        return None, str(e)
+        # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
+        try:
+            return _kraken_current_price(), None
+        except Exception:
+            return None, str(e)
 
 def get_binance_open_price(target_time_utc):
     try:
@@ -110,7 +148,14 @@ def get_binance_open_price(target_time_utc):
         open_price = float(data[0][1])
         return open_price, None
     except Exception as e:
-        return None, str(e)
+        # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
+        try:
+            price = _kraken_open_price(target_time_utc)
+            if price is not None:
+                return price, None
+            return None, "Candle not found yet"
+        except Exception:
+            return None, str(e)
 
 def fetch_polymarket_data_struct():
     """
@@ -126,17 +171,20 @@ def fetch_polymarket_data_struct():
         slug = polymarket_url.split("/")[-1]
         
         # Fetch Data
-        poly_prices, poly_err = get_polymarket_data(slug)
+        poly_result, poly_err = get_polymarket_data(slug)
         current_price, curr_err = get_binance_current_price()
         price_to_beat, beat_err = get_binance_open_price(target_time_utc)
-        
+
         if poly_err:
             return None, f"Polymarket Error: {poly_err}"
-            
+
+        poly_prices, poly_sizes = poly_result
+
         return {
             "price_to_beat": price_to_beat,
             "current_price": current_price,
             "prices": poly_prices, # {'Up': 0.xx, 'Down': 0.xx}
+            "sizes": poly_sizes,   # {'Up': shares, 'Down': shares} depth at best ask
             "slug": slug,
             "target_time_utc": target_time_utc
         }, None

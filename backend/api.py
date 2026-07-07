@@ -15,6 +15,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Minimum executable depth (contracts/shares fillable on BOTH legs) before we
+# call something a real opportunity. A book can show a tempting ask with only a
+# sliver of size behind it; below this floor the "arbitrage" isn't worth acting
+# on and is usually just noise.
+MIN_CONTRACTS = 1.0
+
+def evaluate_check(check):
+    """Decide whether a check is a real, executable arbitrage opportunity.
+
+    Three conditions must all hold:
+    1. Both legs have a real, non-zero ask -- a leg priced at 0 means there is NO
+       ask on that side of the book (no liquidity), not a free buy.
+    2. There is enough depth to actually fill both legs (>= MIN_CONTRACTS). The
+       executable size is the smaller of the two legs' available depth.
+    3. The combined cost of the two legs is below $1.00.
+    """
+    poly_cost = check["poly_cost"]
+    kalshi_cost = check["kalshi_cost"]
+    both_legs_tradeable = poly_cost > 0.0 and kalshi_cost > 0.0
+    has_depth = check.get("max_size", 0.0) >= MIN_CONTRACTS
+
+    if both_legs_tradeable and has_depth and check["total_cost"] < 1.00:
+        check["is_arbitrage"] = True
+        check["margin"] = 1.00 - check["total_cost"]
+    return check["is_arbitrage"]
+
 @app.get("/arbitrage")
 def get_arbitrage_data():
     # Fetch Data
@@ -42,7 +68,12 @@ def get_arbitrage_data():
     poly_strike = poly_data['price_to_beat']
     poly_up_cost = poly_data['prices'].get('Up', 0.0)
     poly_down_cost = poly_data['prices'].get('Down', 0.0)
-    
+
+    # Depth (shares) available at the best ask on each Polymarket leg
+    poly_sizes = poly_data.get('sizes', {})
+    poly_up_size = poly_sizes.get('Up', 0.0)
+    poly_down_size = poly_sizes.get('Down', 0.0)
+
     if poly_strike is None:
         response["errors"].append("Polymarket Strike is None")
         return response
@@ -72,9 +103,11 @@ def get_arbitrage_data():
         kalshi_strike = km['strike']
         kalshi_yes_cost = km['yes_ask'] / 100.0
         kalshi_no_cost = km['no_ask'] / 100.0
-        
+        kalshi_yes_size = km.get('yes_ask_size', 0.0)
+        kalshi_no_size = km.get('no_ask_size', 0.0)
+
         # Only check markets within range (removed previous hardcoded range check)
-            
+
         check_data = {
             "kalshi_strike": kalshi_strike,
             "kalshi_yes": kalshi_yes_cost,
@@ -85,63 +118,55 @@ def get_arbitrage_data():
             "poly_cost": 0,
             "kalshi_cost": 0,
             "total_cost": 0,
+            "poly_size": 0,
+            "kalshi_size": 0,
+            "max_size": 0,
             "is_arbitrage": False,
             "margin": 0
         }
 
+        def set_legs(check, poly_leg, kalshi_leg, poly_cost, kalshi_cost, poly_size, kalshi_size):
+            check["poly_leg"] = poly_leg
+            check["kalshi_leg"] = kalshi_leg
+            check["poly_cost"] = poly_cost
+            check["kalshi_cost"] = kalshi_cost
+            check["total_cost"] = poly_cost + kalshi_cost
+            check["poly_size"] = poly_size
+            check["kalshi_size"] = kalshi_size
+            # Executable depth is limited by the smaller of the two legs
+            check["max_size"] = min(poly_size, kalshi_size)
+
         if poly_strike > kalshi_strike:
             check_data["type"] = "Poly > Kalshi"
-            check_data["poly_leg"] = "Down"
-            check_data["kalshi_leg"] = "Yes"
-            check_data["poly_cost"] = poly_down_cost
-            check_data["kalshi_cost"] = kalshi_yes_cost
-            check_data["total_cost"] = poly_down_cost + kalshi_yes_cost
-            
+            set_legs(check_data, "Down", "Yes", poly_down_cost, kalshi_yes_cost, poly_down_size, kalshi_yes_size)
+
         elif poly_strike < kalshi_strike:
             check_data["type"] = "Poly < Kalshi"
-            check_data["poly_leg"] = "Up"
-            check_data["kalshi_leg"] = "No"
-            check_data["poly_cost"] = poly_up_cost
-            check_data["kalshi_cost"] = kalshi_no_cost
-            check_data["total_cost"] = poly_up_cost + kalshi_no_cost
-            
+            set_legs(check_data, "Up", "No", poly_up_cost, kalshi_no_cost, poly_up_size, kalshi_no_size)
+
         elif poly_strike == kalshi_strike:
             # Check 1
             check1 = check_data.copy()
             check1["type"] = "Equal"
-            check1["poly_leg"] = "Down"
-            check1["kalshi_leg"] = "Yes"
-            check1["poly_cost"] = poly_down_cost
-            check1["kalshi_cost"] = kalshi_yes_cost
-            check1["total_cost"] = poly_down_cost + kalshi_yes_cost
-            
-            if check1["total_cost"] < 1.00:
-                check1["is_arbitrage"] = True
-                check1["margin"] = 1.00 - check1["total_cost"]
+            set_legs(check1, "Down", "Yes", poly_down_cost, kalshi_yes_cost, poly_down_size, kalshi_yes_size)
+
+            if evaluate_check(check1):
                 response["opportunities"].append(check1)
             response["checks"].append(check1)
-            
+
             # Check 2
             check2 = check_data.copy()
             check2["type"] = "Equal"
-            check2["poly_leg"] = "Up"
-            check2["kalshi_leg"] = "No"
-            check2["poly_cost"] = poly_up_cost
-            check2["kalshi_cost"] = kalshi_no_cost
-            check2["total_cost"] = poly_up_cost + kalshi_no_cost
-            
-            if check2["total_cost"] < 1.00:
-                check2["is_arbitrage"] = True
-                check2["margin"] = 1.00 - check2["total_cost"]
+            set_legs(check2, "Up", "No", poly_up_cost, kalshi_no_cost, poly_up_size, kalshi_no_size)
+
+            if evaluate_check(check2):
                 response["opportunities"].append(check2)
             response["checks"].append(check2)
             continue # Skip adding the base check_data
 
-        if check_data["total_cost"] < 1.00:
-            check_data["is_arbitrage"] = True
-            check_data["margin"] = 1.00 - check_data["total_cost"]
+        if evaluate_check(check_data):
             response["opportunities"].append(check_data)
-            
+
         response["checks"].append(check_data)
         
     return response
