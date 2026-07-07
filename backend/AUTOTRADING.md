@@ -27,13 +27,30 @@ and only if you deliberately arm it) executing them.
 - Position limits (`ARB_MAX_ORDER_CONTRACTS`, `ARB_MAX_OPEN_POSITIONS`) apply to
   the TESTNET and LIVE paths.
 
+## Validate your Kalshi demo credentials first
+
+Before running TESTNET mode, confirm your demo keys work:
+
+```bash
+cd backend
+python smoke_test_kalshi.py                       # host + signing + balance
+python smoke_test_kalshi.py --list-markets        # find a ticker
+python smoke_test_kalshi.py --place-test-order --ticker <TICKER>   # place + cancel
+```
+
+`[OK] Auth OK ... Demo balance: $X` means you're ready. A `401` means the demo
+API is reachable but rejected the credentials (check key id / private key / clock
+skew). The order test places a 1-contract order priced far from the market so it
+rests without filling, then cancels it.
+
 ## Running on testnet (fake funds)
 
 1. `pip install -r requirements.txt` (adds `cryptography`) and
    `pip install py-clob-client` (for the Polymarket leg).
 2. Get **Kalshi demo** API credentials (key id + RSA private key) from the demo
    dashboard, and a funded **Amoy** test wallet (test USDC/MATIC).
-3. Put them in `.env`, set `EXECUTION_MODE=testnet`.
+3. Put them in `.env`, set `EXECUTION_MODE=testnet`. Run `smoke_test_kalshi.py`
+   above to confirm the Kalshi leg before going further.
 4. Confirm the current Amoy CLOB host in Polymarket's docs and update
    `clients/polymarket_client.py` (`DEFAULT_TESTNET_HOST` is a placeholder).
 5. Run the backend + `python auto_runner.py`. The header badge turns amber

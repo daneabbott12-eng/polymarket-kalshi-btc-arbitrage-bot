@@ -63,9 +63,11 @@ class KalshiDemoClient:
         }
 
     def _request(self, method, endpoint, body=None):
-        # `endpoint` is relative to PATH_PREFIX, e.g. "/portfolio/balance".
-        sign_path = PATH_PREFIX + endpoint
-        url = DEMO_HOST + sign_path
+        # `endpoint` is relative to PATH_PREFIX, e.g. "/portfolio/balance" or
+        # "/markets?limit=10". Kalshi signs the PATH ONLY (no query string).
+        path_only = endpoint.split("?", 1)[0]
+        sign_path = PATH_PREFIX + path_only
+        url = DEMO_HOST + PATH_PREFIX + endpoint
         headers = self._headers(method, sign_path)
         resp = requests.request(
             method, url, headers=headers,
@@ -75,8 +77,20 @@ class KalshiDemoClient:
         return resp.json()
 
     # -- api ----------------------------------------------------------------
+    def get_exchange_status(self):
+        return self._request("GET", "/exchange/status")
+
     def get_balance(self):
         return self._request("GET", "/portfolio/balance")
+
+    def get_markets(self, limit=10, status="open", series_ticker=None):
+        params = f"?limit={int(limit)}&status={status}"
+        if series_ticker:
+            params += f"&series_ticker={series_ticker}"
+        return self._request("GET", "/markets" + params)
+
+    def cancel_order(self, order_id):
+        return self._request("DELETE", f"/portfolio/orders/{order_id}")
 
     def place_limit_order(self, *, ticker, side, action, count, price_cents, client_order_id):
         """Place a limit order on the DEMO exchange.
