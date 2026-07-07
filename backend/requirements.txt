@@ -2,3 +2,8 @@ fastapi>=0.100.0
 uvicorn>=0.20.0
 requests>=2.31.0
 pytz>=2023.3
+# For Kalshi demo/testnet request signing (clients/kalshi_client.py)
+cryptography>=42.0.0
+# Polymarket testnet client (clients/polymarket_client.py) additionally needs
+# py-clob-client — installed separately since it pulls web3/eth deps:
+#   pip install py-clob-client

@@ -100,11 +100,13 @@ def get_polymarket_data(slug):
         # 2. Fetch Price for each Token from CLOB
         prices = {}
         sizes = {}
-        books = {}   # full ask ladder per outcome: [[price, size], ...]
+        books = {}       # full ask ladder per outcome: [[price, size], ...]
+        token_ids = {}   # CLOB token id per outcome (needed to place orders)
         # Assuming order is [Up, Down] or matches outcomes
         # Usually outcomes are ["Up", "Down"] and clobTokenIds correspond.
 
         for outcome, token_id in zip(outcomes, clob_token_ids):
+            token_ids[outcome] = token_id
             result = get_clob_price(token_id)
             if result is not None:
                 prices[outcome] = result["best_ask"]
@@ -115,7 +117,7 @@ def get_polymarket_data(slug):
                 sizes[outcome] = 0.0
                 books[outcome] = []
 
-        return (prices, sizes, books), None
+        return (prices, sizes, books, token_ids), None
     except Exception as e:
         return None, str(e)
 
@@ -195,7 +197,7 @@ def fetch_polymarket_data_struct():
         if poly_err:
             return None, f"Polymarket Error: {poly_err}"
 
-        poly_prices, poly_sizes, poly_books = poly_result
+        poly_prices, poly_sizes, poly_books, poly_token_ids = poly_result
 
         return {
             "price_to_beat": price_to_beat,
@@ -203,6 +205,7 @@ def fetch_polymarket_data_struct():
             "prices": poly_prices, # {'Up': 0.xx, 'Down': 0.xx}
             "sizes": poly_sizes,   # {'Up': shares, 'Down': shares} depth at best ask
             "books": poly_books,   # {'Up': [[price,size],...], 'Down': [...]} ask ladder
+            "token_ids": poly_token_ids,  # {'Up': '0x..', 'Down': '0x..'} CLOB token ids
             "slug": slug,
             "target_time_utc": target_time_utc
         }, None

@@ -3,20 +3,41 @@
 The bot can run headless, continuously detecting opportunities and (optionally,
 and only if you deliberately arm it) executing them.
 
+## Execution modes
+
+| Mode | How to select | What it does | Money |
+|------|---------------|--------------|-------|
+| `DRY_RUN` | default | detect + log intended orders only | none |
+| `TESTNET` | `EXECUTION_MODE=testnet` + demo creds | places REAL orders on demo/testnet | fake |
+| `LIVE` | `ARM_LIVE_TRADING=true` + creds + you wire the stubs | places real orders | **REAL** |
+
 ## Safety model — read this first
 
-- **Default is DRY_RUN.** Nothing places a real order out of the box.
-- Live trading requires **all** of the following, by design:
+- **Default is DRY_RUN.** Nothing places any order out of the box.
+- **TESTNET** places orders against Kalshi's demo API and Polymarket's Amoy
+  testnet using `clients/kalshi_client.py` / `clients/polymarket_client.py`.
+  Fake funds only — the clients are hard-wired to demo/testnet hosts and refuse
+  Polygon mainnet. Falls back to DRY_RUN if credentials are missing.
+- **LIVE (real money)** requires **all** of, by design:
   1. `ARM_LIVE_TRADING=true`
-  2. All exchange credentials present in the environment
+  2. All exchange credentials present
   3. You implement the order-submission stubs in `execution_engine.py`
      (`_place_kalshi_order` / `_place_polymarket_order`), which currently raise
-     `NotImplementedError` so an armed-but-unfinished setup **fails safe** instead
-     of sending malformed orders.
+     `NotImplementedError` so an armed-but-unfinished setup **fails safe**.
 - Position limits (`ARB_MAX_ORDER_CONTRACTS`, `ARB_MAX_OPEN_POSITIONS`) apply to
-  the live path only.
+  the TESTNET and LIVE paths.
 
-If any of 1–3 is missing, the engine stays in DRY_RUN and places nothing.
+## Running on testnet (fake funds)
+
+1. `pip install -r requirements.txt` (adds `cryptography`) and
+   `pip install py-clob-client` (for the Polymarket leg).
+2. Get **Kalshi demo** API credentials (key id + RSA private key) from the demo
+   dashboard, and a funded **Amoy** test wallet (test USDC/MATIC).
+3. Put them in `.env`, set `EXECUTION_MODE=testnet`.
+4. Confirm the current Amoy CLOB host in Polymarket's docs and update
+   `clients/polymarket_client.py` (`DEFAULT_TESTNET_HOST` is a placeholder).
+5. Run the backend + `python auto_runner.py`. The header badge turns amber
+   (`Auto: TESTNET`); detected opportunities are placed on the demo/testnet books.
 
 ## Run the auto-runner (detection + alerts, DRY_RUN)
 

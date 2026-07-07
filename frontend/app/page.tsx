@@ -86,6 +86,7 @@ interface AutoStatus {
   mode: string
   armed: boolean
   arm_flag: boolean
+  execution_mode: string
   has_credentials: boolean
   max_order_contracts: number
   max_open_positions: number
@@ -198,12 +199,20 @@ export default function Dashboard() {
           {autoStatus && (
             <Badge
               variant="outline"
-              className={autoStatus.mode === "LIVE"
-                ? "bg-red-100 text-red-800 border-red-300"
-                : "bg-slate-100 text-slate-600 border-slate-300"}
+              className={
+                autoStatus.mode === "LIVE"
+                  ? "bg-red-100 text-red-800 border-red-300"
+                  : autoStatus.mode === "TESTNET"
+                  ? "bg-amber-100 text-amber-800 border-amber-300"
+                  : "bg-slate-100 text-slate-600 border-slate-300"
+              }
               title={`Auto-execution: ${autoStatus.mode}. Max ${autoStatus.max_order_contracts} contracts/order.`}
             >
-              {autoStatus.mode === "LIVE" ? "⚠ LIVE TRADING" : "Auto: DRY-RUN"}
+              {autoStatus.mode === "LIVE"
+                ? "⚠ LIVE TRADING"
+                : autoStatus.mode === "TESTNET"
+                ? "Auto: TESTNET"
+                : "Auto: DRY-RUN"}
             </Badge>
           )}
         </div>

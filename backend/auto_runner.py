@@ -49,6 +49,8 @@ def actionable_opportunities(data):
                 "poly_leg": c["poly_leg"],
                 "kalshi_leg": c["kalshi_leg"],
                 "kalshi_strike": c["kalshi_strike"],
+                "kalshi_ticker": c.get("kalshi_ticker"),
+                "poly_token_id": c.get("poly_token_id"),
                 "size": e["fill_size"],
                 "avg_poly_cost": e["avg_poly_cost"],
                 "avg_kalshi_cost": e["avg_kalshi_cost"],

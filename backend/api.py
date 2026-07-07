@@ -206,6 +206,7 @@ def get_arbitrage_data():
     poly_up_size = poly_sizes.get('Up', 0.0)
     poly_down_size = poly_sizes.get('Down', 0.0)
     poly_books = poly_data.get('books', {})
+    poly_token_ids = poly_data.get('token_ids', {})
 
     if poly_strike is None:
         response["errors"].append("Polymarket Strike is None")
@@ -273,7 +274,10 @@ def get_arbitrage_data():
             "is_arbitrage": False,
             "margin": 0,
             "execution": None,
-            "paper_trade_recorded": False
+            "paper_trade_recorded": False,
+            # Exchange identifiers needed to place orders (used by the executor).
+            "kalshi_ticker": km.get("ticker"),
+            "poly_token_id": None
         }
 
         def set_legs(check, poly_leg, kalshi_leg, poly_cost, kalshi_cost, poly_size, kalshi_size):
@@ -284,6 +288,7 @@ def get_arbitrage_data():
             check["total_cost"] = poly_cost + kalshi_cost
             check["poly_size"] = poly_size
             check["kalshi_size"] = kalshi_size
+            check["poly_token_id"] = poly_token_ids.get(poly_leg)
             # Executable depth is limited by the smaller of the two legs
             check["max_size"] = min(poly_size, kalshi_size)
 

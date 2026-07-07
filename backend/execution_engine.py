@@ -38,7 +38,9 @@ class SafetyError(Exception):
 class ExecutionEngine:
     def __init__(self):
         self.arm_flag = _env_bool("ARM_LIVE_TRADING", False)
-        # Position / risk limits (apply to the LIVE path).
+        # "dry_run" (default) or "testnet". LIVE is a separate, harder gate below.
+        self.execution_mode = os.environ.get("EXECUTION_MODE", "dry_run").strip().lower()
+        # Position / risk limits (apply to the TESTNET and LIVE paths).
         self.max_order_contracts = _env_float("ARB_MAX_ORDER_CONTRACTS", 50.0)
         self.max_open_positions = int(_env_float("ARB_MAX_OPEN_POSITIONS", 5))
 
@@ -51,25 +53,32 @@ class ExecutionEngine:
         self._poly_wallet_key = os.environ.get("POLYMARKET_WALLET_PRIVATE_KEY")
 
         self._open_positions = 0
+        self._order_seq = 0
 
     def has_credentials(self):
         kalshi_ok = bool(self._kalshi_key_id and self._kalshi_private_key)
-        poly_ok = bool(
-            self._poly_api_key and self._poly_secret
-            and self._poly_passphrase and self._poly_wallet_key
-        )
+        poly_ok = bool(self._poly_wallet_key)  # testnet needs at least a wallet key
         return kalshi_ok and poly_ok
 
     @property
     def armed(self):
-        """Live trading is armed ONLY with both the explicit flag and credentials."""
+        """Live (real-money) trading is armed ONLY with the flag AND credentials."""
         return self.arm_flag and self.has_credentials()
+
+    @property
+    def mode(self):
+        if self.armed:
+            return "LIVE"
+        if self.execution_mode == "testnet" and self.has_credentials():
+            return "TESTNET"
+        return "DRY_RUN"
 
     def status(self):
         return {
-            "mode": "LIVE" if self.armed else "DRY_RUN",
+            "mode": self.mode,
             "armed": self.armed,
             "arm_flag": self.arm_flag,
+            "execution_mode": self.execution_mode,
             "has_credentials": self.has_credentials(),
             "max_order_contracts": self.max_order_contracts,
             "max_open_positions": self.max_open_positions,
@@ -95,10 +104,11 @@ class ExecutionEngine:
         }
 
     def handle(self, opp):
-        """Handle a detected opportunity. Dry-run unless explicitly armed."""
+        """Handle a detected opportunity. DRY_RUN unless testnet/live is enabled."""
         plan = self.build_plan(opp)
+        mode = self.mode
 
-        if not self.armed:
+        if mode == "DRY_RUN":
             log.warning(
                 "DRY_RUN would execute: P-%s x%.0f @ $%.3f  +  K-%s($%s) x%.0f @ $%.3f",
                 plan["poly"]["leg"], plan["size"], plan["poly"]["limit_price"],
@@ -107,14 +117,54 @@ class ExecutionEngine:
             )
             return {"mode": "DRY_RUN", "plan": plan, "placed": False}
 
-        # ----- LIVE PATH (armed + credentials present) -----
         self._check_safety(plan["size"])
+
+        if mode == "TESTNET":
+            # Places REAL orders on demo/testnet (fake funds). Safe to run.
+            result = self._place_testnet_orders(plan, opp)
+            self._open_positions += 1
+            return {"mode": "TESTNET", "plan": plan, "placed": True, "result": result}
+
+        # ----- LIVE PATH (real money: armed + credentials present) -----
         # Both raise NotImplementedError until YOU wire the signed clients, so an
         # armed-but-unfinished setup fails safe instead of sending bad orders.
         self._place_polymarket_order(plan["poly"])
         self._place_kalshi_order(plan["kalshi"])
         self._open_positions += 1
         return {"mode": "LIVE", "plan": plan, "placed": True}
+
+    # -- testnet execution (fake funds) -------------------------------------
+    def _next_client_order_id(self, opp):
+        self._order_seq += 1
+        return f"arb-{opp.get('kalshi_strike')}-{opp.get('poly_leg')}-{self._order_seq}"
+
+    def _place_testnet_orders(self, plan, opp):
+        from clients.kalshi_client import KalshiDemoClient
+        from clients.polymarket_client import PolymarketTestnetClient
+
+        if not opp.get("kalshi_ticker"):
+            raise SafetyError("Missing kalshi_ticker on opportunity; cannot place order.")
+        if not opp.get("poly_token_id"):
+            raise SafetyError("Missing poly_token_id on opportunity; cannot place order.")
+
+        kalshi = KalshiDemoClient(self._kalshi_key_id, self._kalshi_private_key)
+        poly = PolymarketTestnetClient(wallet_private_key=self._poly_wallet_key)
+
+        kalshi_res = kalshi.place_limit_order(
+            ticker=opp["kalshi_ticker"],
+            side=plan["kalshi"]["leg"].lower(),   # 'yes' | 'no'
+            action="buy",
+            count=int(plan["size"]),
+            price_cents=round(plan["kalshi"]["limit_price"] * 100),
+            client_order_id=self._next_client_order_id(opp),
+        )
+        poly_res = poly.place_limit_order(
+            token_id=opp["poly_token_id"],
+            side="BUY",
+            size=plan["size"],
+            price=plan["poly"]["limit_price"],
+        )
+        return {"kalshi": kalshi_res, "polymarket": poly_res}
 
     def _check_safety(self, size):
         if size <= 0:
