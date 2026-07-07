@@ -4,6 +4,7 @@ from fetch_current_polymarket import fetch_polymarket_data_struct
 from fetch_current_kalshi import fetch_kalshi_data_struct, get_orderbook_ask_ladders
 from paper_trader import PaperTrader
 from execution_engine import ExecutionEngine
+from clients.kalshi_readonly_client import KalshiReadOnlyClient
 import datetime
 import math
 import os
@@ -377,6 +378,39 @@ def reset_paper_trades():
 def auto_status():
     """Execution mode for the auto-runner: DRY_RUN unless live trading is armed."""
     return ENGINE.status()
+
+def _get_kalshi_readonly():
+    """Build a read-only production client from KALSHI_PROD_* creds, or None."""
+    kid = os.environ.get("KALSHI_PROD_API_KEY_ID")
+    pem = os.environ.get("KALSHI_PROD_PRIVATE_KEY")
+    if not kid or not pem:
+        return None
+    return KalshiReadOnlyClient(kid, pem)
+
+@app.get("/account/kalshi")
+def kalshi_account():
+    """Read-only view of your LIVE Kalshi account (balance + open positions).
+
+    Uses the KalshiReadOnlyClient, which has no order methods -- this endpoint
+    cannot place or cancel anything. Returns {connected: false} if no prod creds.
+    """
+    client = _get_kalshi_readonly()
+    if client is None:
+        return {"connected": False, "reason": "No KALSHI_PROD_* credentials configured."}
+    try:
+        bal = client.get_balance()
+        cents = bal.get("balance") if isinstance(bal, dict) else None
+        pos = client.get_positions()
+        positions = pos.get("market_positions", []) if isinstance(pos, dict) else []
+        held = [p for p in positions if p.get("position")]
+        return {
+            "connected": True,
+            "read_only": True,
+            "balance_dollars": round(cents / 100.0, 2) if isinstance(cents, (int, float)) else None,
+            "positions": held[:50],
+        }
+    except Exception as e:
+        return {"connected": False, "error": str(e)}
 
 @app.post("/paper/simulate")
 def simulate_paper_trade():

@@ -82,6 +82,15 @@ interface PaperSummary {
   realized_net_pnl: number
 }
 
+interface KalshiAccount {
+  connected: boolean
+  read_only?: boolean
+  balance_dollars?: number | null
+  positions?: Array<{ ticker?: string; position?: number; market_exposure?: number }>
+  reason?: string
+  error?: string
+}
+
 interface AutoStatus {
   mode: string
   armed: boolean
@@ -115,6 +124,7 @@ export default function Dashboard() {
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [paperTrades, setPaperTrades] = useState<PaperTrade[]>([])
   const [autoStatus, setAutoStatus] = useState<AutoStatus | null>(null)
+  const [account, setAccount] = useState<KalshiAccount | null>(null)
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
 
@@ -152,6 +162,15 @@ export default function Dashboard() {
     }
   }
 
+  const fetchAccount = async () => {
+    try {
+      const res = await fetch("/api/account/kalshi")
+      setAccount(await res.json())
+    } catch (err) {
+      console.error("Failed to fetch account", err)
+    }
+  }
+
   const simulatePaperTrade = async () => {
     await fetch("/api/paper/simulate", { method: "POST" })
     fetchPaperTrades()
@@ -168,15 +187,22 @@ export default function Dashboard() {
     fetchData()
     fetchPaperTrades()
     fetchAutoStatus()
+    fetchAccount()
 
-    // Setup polling
+    // Fast polling for market data
     const interval = setInterval(() => {
       fetchData()
       fetchPaperTrades()
       fetchAutoStatus()
     }, 1000)
 
-    return () => clearInterval(interval)
+    // Slow polling for the live account (avoid hammering the production API)
+    const accountInterval = setInterval(fetchAccount, 15000)
+
+    return () => {
+      clearInterval(interval)
+      clearInterval(accountInterval)
+    }
   }, [])
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>
@@ -232,6 +258,51 @@ export default function Dashboard() {
               ))}
             </ul>
           </div>
+        </div>
+      )}
+
+      {/* Live account (read-only) */}
+      {account?.connected && (
+        <Card className="border-slate-200">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <CardTitle className="text-base">Your Kalshi Account</CardTitle>
+              <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                read-only · no orders placed
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-6 items-center">
+              <div>
+                <div className="text-xs text-muted-foreground uppercase font-bold">Balance</div>
+                <div className="text-2xl font-mono font-semibold">
+                  {account.balance_dollars != null ? `$${account.balance_dollars.toFixed(2)}` : "N/A"}
+                </div>
+              </div>
+              <div className="flex-1 min-w-[200px]">
+                <div className="text-xs text-muted-foreground uppercase font-bold mb-1">
+                  Open positions ({account.positions?.length || 0})
+                </div>
+                {account.positions && account.positions.length > 0 ? (
+                  <div className="flex flex-wrap gap-2">
+                    {account.positions.slice(0, 8).map((p, i) => (
+                      <span key={i} className="text-xs font-mono bg-slate-100 px-2 py-1 rounded">
+                        {p.ticker}: {p.position}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">No open positions.</div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+      {account && !account.connected && account.error && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 px-4 py-2 rounded-md text-sm">
+          Live account connect failed: {account.error}
         </div>
       )}
 
