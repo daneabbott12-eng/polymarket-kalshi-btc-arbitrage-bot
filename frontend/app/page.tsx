@@ -44,6 +44,9 @@ interface Check {
   poly_size: number
   kalshi_size: number
   max_size: number
+  gross_margin: number
+  fees: number
+  net_margin: number
   is_arbitrage: boolean
   margin: number
 }
@@ -133,9 +136,9 @@ export default function Dashboard() {
           <CardContent>
             <div className="flex flex-col md:flex-row justify-between items-center gap-4">
               <div className="text-center md:text-left">
-                <div className="text-sm text-muted-foreground">Profit Margin</div>
-                <div className="text-4xl font-bold text-green-700">${bestOpp.margin.toFixed(3)}</div>
-                <div className="text-xs text-green-600 font-medium">per unit</div>
+                <div className="text-sm text-muted-foreground">Net Profit Margin</div>
+                <div className="text-4xl font-bold text-green-700">${bestOpp.net_margin.toFixed(3)}</div>
+                <div className="text-xs text-green-600 font-medium">per contract, after fees</div>
               </div>
 
               <div className="flex-1 bg-white p-4 rounded-lg border border-green-100 w-full">
@@ -154,6 +157,18 @@ export default function Dashboard() {
                 <div className="pt-2 border-t border-dashed border-slate-200 flex justify-between font-bold">
                   <span>Total Cost</span>
                   <span>${bestOpp.total_cost.toFixed(3)}</span>
+                </div>
+                <div className="flex justify-between text-xs text-muted-foreground mt-2">
+                  <span>Gross Margin</span>
+                  <span className="font-mono">${bestOpp.gross_margin.toFixed(3)}</span>
+                </div>
+                <div className="flex justify-between text-xs text-muted-foreground">
+                  <span>Trading Fees</span>
+                  <span className="font-mono text-red-500">−${bestOpp.fees.toFixed(3)}</span>
+                </div>
+                <div className="flex justify-between text-xs font-semibold text-green-700 pt-1 border-t border-dashed border-slate-200 mt-1">
+                  <span>Net Margin</span>
+                  <span className="font-mono">${bestOpp.net_margin.toFixed(3)}</span>
                 </div>
                 <div className="flex justify-between text-xs text-muted-foreground mt-2">
                   <span>Executable Depth</span>
@@ -302,7 +317,7 @@ export default function Dashboard() {
                     <TableCell className="w-[30%]">
                       <div className="space-y-1">
                         <div className="flex justify-between text-xs text-muted-foreground">
-                          <span>${check.poly_cost.toFixed(3)} + ${check.kalshi_cost.toFixed(3)}</span>
+                          <span>${check.poly_cost.toFixed(3)} + ${check.kalshi_cost.toFixed(3)} <span className="text-red-400">+ ${check.fees.toFixed(3)} fee</span></span>
                           <span>{Math.round(check.total_cost * 100)}%</span>
                         </div>
                         <Progress

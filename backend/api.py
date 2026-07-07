@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fetch_current_polymarket import fetch_polymarket_data_struct
 from fetch_current_kalshi import fetch_kalshi_data_struct
 import datetime
+import math
 
 app = FastAPI()
 
@@ -21,24 +22,55 @@ app.add_middleware(
 # on and is usually just noise.
 MIN_CONTRACTS = 1.0
 
+# Trading fees. Polymarket charges no trading fee on CLOB fills. Kalshi charges a
+# per-contract trading fee of ceil(0.07 * C * P * (1-P)) where P is the execution
+# price in dollars -- largest near P=0.50, shrinking toward 0/1. Rate is a
+# constant so it is easy to update if the published schedule changes.
+# Ref: https://kalshi.com/docs/kalshi-fee-schedule.pdf
+KALSHI_FEE_RATE = 0.07
+POLYMARKET_FEE_RATE = 0.0
+
+def kalshi_trading_fee(price, contracts=1.0):
+    """Kalshi trading fee for `contracts` at execution `price` (dollars).
+
+    Kalshi rounds the fee UP to the next cent per order, so even a single
+    contract incurs at least $0.01 whenever the raw fee is > 0.
+    """
+    raw = KALSHI_FEE_RATE * contracts * price * (1.0 - price)
+    return math.ceil(raw * 100.0) / 100.0
+
 def evaluate_check(check):
     """Decide whether a check is a real, executable arbitrage opportunity.
 
-    Three conditions must all hold:
+    All conditions must hold:
     1. Both legs have a real, non-zero ask -- a leg priced at 0 means there is NO
        ask on that side of the book (no liquidity), not a free buy.
     2. There is enough depth to actually fill both legs (>= MIN_CONTRACTS). The
        executable size is the smaller of the two legs' available depth.
-    3. The combined cost of the two legs is below $1.00.
+    3. The margin is still positive AFTER trading fees. Gross margin is
+       (1.00 - total_cost); fees are charged on each leg. A trade that clears
+       $1.00 gross can easily be a loser once Kalshi's fee is paid.
     """
     poly_cost = check["poly_cost"]
     kalshi_cost = check["kalshi_cost"]
     both_legs_tradeable = poly_cost > 0.0 and kalshi_cost > 0.0
     has_depth = check.get("max_size", 0.0) >= MIN_CONTRACTS
 
-    if both_legs_tradeable and has_depth and check["total_cost"] < 1.00:
+    # Per-contract economics (Kalshi fee on its leg; Polymarket leg is fee-free).
+    gross_margin = 1.00 - check["total_cost"]
+    kalshi_fee = kalshi_trading_fee(kalshi_cost) if kalshi_cost > 0.0 else 0.0
+    poly_fee = POLYMARKET_FEE_RATE * poly_cost
+    fees = kalshi_fee + poly_fee
+    net_margin = gross_margin - fees
+
+    check["gross_margin"] = gross_margin
+    check["fees"] = fees
+    check["net_margin"] = net_margin
+    # `margin` now reflects the fee-adjusted (net) profit per contract.
+    check["margin"] = net_margin
+
+    if both_legs_tradeable and has_depth and net_margin > 0.0:
         check["is_arbitrage"] = True
-        check["margin"] = 1.00 - check["total_cost"]
     return check["is_arbitrage"]
 
 @app.get("/arbitrage")
@@ -121,6 +153,9 @@ def get_arbitrage_data():
             "poly_size": 0,
             "kalshi_size": 0,
             "max_size": 0,
+            "gross_margin": 0,
+            "fees": 0,
+            "net_margin": 0,
             "is_arbitrage": False,
             "margin": 0
         }
