@@ -7,6 +7,9 @@ from execution_engine import ExecutionEngine
 import datetime
 import math
 import os
+from load_env import load_dotenv
+
+load_dotenv()  # pull backend/.env into the environment before reading config
 
 def _env_float(name, default):
     """Read a float from the environment, falling back to `default` if unset or

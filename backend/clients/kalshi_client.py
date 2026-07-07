@@ -13,6 +13,7 @@ Reference: https://trading-api.readme.io/reference/api-keys
 """
 import base64
 import json
+import os
 import time
 
 import requests
@@ -27,9 +28,14 @@ class KalshiDemoClient:
         if not key_id or not private_key_pem:
             raise ValueError(
                 "KalshiDemoClient needs KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY "
-                "(RSA private key in PEM form) from the Kalshi DEMO dashboard."
+                "(RSA private key in PEM form, or a path to a .pem file) from the "
+                "Kalshi DEMO dashboard."
             )
         self.key_id = key_id
+        # Accept either inline PEM or a path to a .pem file.
+        if "BEGIN" not in private_key_pem and os.path.isfile(private_key_pem):
+            with open(private_key_pem) as f:
+                private_key_pem = f.read()
         self._private_key_pem = private_key_pem
 
     # -- signing ------------------------------------------------------------

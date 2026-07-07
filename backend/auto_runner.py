@@ -22,6 +22,9 @@ import datetime
 import urllib.request
 
 from execution_engine import ExecutionEngine
+from load_env import load_dotenv
+
+load_dotenv()  # pull backend/.env into the environment before reading config
 
 API_BASE = os.environ.get("ARB_API_BASE", "http://localhost:8000").rstrip("/")
 POLL_SECONDS = float(os.environ.get("AUTO_POLL_SECONDS", "3"))
