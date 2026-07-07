@@ -132,11 +132,19 @@ def get_binance_current_price():
         except Exception:
             return None, str(e)
 
+# The hourly open ("price to beat") is fixed for the whole hour, so cache it per
+# target hour. This avoids hammering the price API every poll -- which under
+# 1s polling was rate-limiting Kraken and intermittently returning None.
+_open_price_cache = {}
+
 def get_binance_open_price(target_time_utc):
+    cache_key = int(target_time_utc.timestamp())
+    if cache_key in _open_price_cache:
+        return _open_price_cache[cache_key], None
     try:
         # Timestamp in milliseconds
         timestamp_ms = int(target_time_utc.timestamp() * 1000)
-        
+
         # Fetch 1h kline for the specific timestamp
         params = {
             "symbol": SYMBOL,
@@ -147,18 +155,20 @@ def get_binance_open_price(target_time_utc):
         response = requests.get(BINANCE_KLINES_URL, params=params)
         response.raise_for_status()
         data = response.json()
-        
+
         if not data:
             return None, "Candle not found yet"
-            
+
         # Kline format: [Open time, Open, High, Low, Close, Volume, ...]
         open_price = float(data[0][1])
+        _open_price_cache[cache_key] = open_price
         return open_price, None
     except Exception as e:
         # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
         try:
             price = _kraken_open_price(target_time_utc)
             if price is not None:
+                _open_price_cache[cache_key] = price
                 return price, None
             return None, "Candle not found yet"
         except Exception:

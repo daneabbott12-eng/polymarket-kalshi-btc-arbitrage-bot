@@ -42,16 +42,25 @@ class PaperTrader:
         return any(t["key"] == key for t in self.trades)
 
     def record(self, *, window, settle_time, kalshi_strike, poly_leg, kalshi_leg,
-               size, avg_poly_cost, avg_kalshi_cost, fee_per_contract, timestamp):
+               size, avg_poly_cost, avg_kalshi_cost, fee_per_contract, timestamp,
+               slippage_per_leg=0.0, risk_adj_net_per_contract=None):
         """Record one simulated fill. Deduped by (window, strike, legs) so a
-        persistent opportunity is only entered once per hourly market."""
+        persistent opportunity is only entered once per hourly market.
+
+        Slippage is added to each leg's cost, so the net margin and cost basis are
+        the realistic (post-slippage) figures. `risk_adj_net_per_contract`, if
+        given, is the leg-risk-adjusted expectation and is tracked alongside."""
         key = f"{window}|{kalshi_strike}|{poly_leg}|{kalshi_leg}"
         if self._has_key(key):
             return None
 
-        total_cost = avg_poly_cost + avg_kalshi_cost
+        total_slippage = 2.0 * slippage_per_leg
+        total_cost = avg_poly_cost + avg_kalshi_cost + total_slippage
         net_per_contract = 1.0 - total_cost - fee_per_contract
         cost_basis = (total_cost + fee_per_contract) * size
+
+        if risk_adj_net_per_contract is None:
+            risk_adj_net_per_contract = net_per_contract
 
         trade = {
             "key": key,
@@ -64,10 +73,13 @@ class PaperTrader:
             "size": round(size, 2),
             "avg_poly_cost": round(avg_poly_cost, 4),
             "avg_kalshi_cost": round(avg_kalshi_cost, 4),
+            "slippage_per_leg": round(slippage_per_leg, 4),
             "fee_per_contract": round(fee_per_contract, 4),
             "cost_basis": round(cost_basis, 2),
             "net_margin_per_contract": round(net_per_contract, 4),
             "expected_net_pnl": round(net_per_contract * size, 2),
+            "risk_adj_net_per_contract": round(risk_adj_net_per_contract, 4),
+            "risk_adj_net_pnl": round(risk_adj_net_per_contract * size, 2),
             "status": "open",
             "realized_pnl": None,
         }
@@ -96,6 +108,7 @@ class PaperTrader:
             "settled": len(settled),
             "total_invested": round(sum(t["cost_basis"] for t in self.trades), 2),
             "expected_net_pnl": round(sum(t["expected_net_pnl"] for t in self.trades), 2),
+            "risk_adj_net_pnl": round(sum(t.get("risk_adj_net_pnl", t["expected_net_pnl"]) for t in self.trades), 2),
             "realized_net_pnl": round(sum((t["realized_pnl"] or 0.0) for t in settled), 2),
         }
 

@@ -42,7 +42,14 @@ interface Execution {
   total_cost_at_size: number
   fee_per_contract: number
   net_margin_at_size: number
+  slippage_per_leg: number
+  total_slippage: number
+  net_margin_slipped: number
+  fill_probability: number
+  risk_adj_net_margin: number
   total_net_pnl: number
+  total_net_pnl_slipped: number
+  risk_adj_net_pnl: number
   is_arbitrage_at_size: boolean
 }
 
@@ -71,6 +78,7 @@ interface PaperSummary {
   settled: number
   total_invested: number
   expected_net_pnl: number
+  risk_adj_net_pnl: number
   realized_net_pnl: number
 }
 
@@ -84,6 +92,8 @@ interface PaperTrade {
   cost_basis: number
   net_margin_per_contract: number
   expected_net_pnl: number
+  risk_adj_net_per_contract: number
+  risk_adj_net_pnl: number
   status: string
   realized_pnl: number | null
 }
@@ -386,12 +396,14 @@ export default function Dashboard() {
                           indicatorClassName={isArb ? "bg-green-500" : "bg-slate-400"}
                         />
                         {check.execution && (
-                          <div className="text-[11px] mt-0.5">
-                            <span className="text-muted-foreground">
-                              @ {Math.floor(check.execution.fill_size)} filled: VWAP ${check.execution.total_cost_at_size.toFixed(3)} →{" "}
+                          <div className="text-[11px] mt-0.5 text-muted-foreground">
+                            @ {Math.floor(check.execution.fill_size)} filled (VWAP ${check.execution.total_cost_at_size.toFixed(3)}):{" "}
+                            <span className={check.execution.net_margin_slipped > 0 ? "text-green-600 font-medium" : "text-red-500"}>
+                              {check.execution.net_margin_slipped > 0 ? "+" : ""}${check.execution.net_margin_slipped.toFixed(3)}/ct
                             </span>
-                            <span className={check.execution.net_margin_at_size > 0 ? "text-green-600 font-medium" : "text-red-500"}>
-                              {check.execution.net_margin_at_size > 0 ? "+" : ""}${check.execution.net_margin_at_size.toFixed(3)}/ct net
+                            <span className="text-slate-400"> after slip · risk-adj </span>
+                            <span className={check.execution.risk_adj_net_margin > 0 ? "text-green-600" : "text-red-400"}>
+                              {check.execution.risk_adj_net_margin > 0 ? "+" : ""}${check.execution.risk_adj_net_margin.toFixed(3)}
                             </span>
                           </div>
                         )}
@@ -448,21 +460,27 @@ export default function Dashboard() {
         </CardHeader>
         <CardContent>
           {data.paper && (
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-2">
               {[
-                { label: "Trades", value: data.paper.total_trades },
-                { label: "Open", value: data.paper.open },
-                { label: "Settled", value: data.paper.settled },
+                { label: "Trades", value: `${data.paper.total_trades}` },
+                { label: "Open", value: `${data.paper.open}` },
+                { label: "Settled", value: `${data.paper.settled}` },
                 { label: "Invested", value: `$${data.paper.total_invested.toFixed(2)}` },
-                { label: "Net P&L (exp.)", value: `$${data.paper.expected_net_pnl.toFixed(2)}`, good: true },
+                { label: "P&L (after slip)", value: `$${data.paper.expected_net_pnl.toFixed(2)}`, signed: data.paper.expected_net_pnl },
+                { label: "P&L (risk-adj)", value: `$${data.paper.risk_adj_net_pnl.toFixed(2)}`, signed: data.paper.risk_adj_net_pnl },
               ].map((s) => (
                 <div key={s.label} className="bg-slate-100 p-3 rounded-md">
                   <div className="text-xs text-muted-foreground uppercase font-bold">{s.label}</div>
-                  <div className={`text-xl font-mono font-semibold ${s.good ? "text-green-700" : ""}`}>{s.value}</div>
+                  <div className={`text-xl font-mono font-semibold ${
+                    s.signed === undefined ? "" : s.signed >= 0 ? "text-green-700" : "text-red-600"
+                  }`}>{s.value}</div>
                 </div>
               ))}
             </div>
           )}
+          <div className="text-[11px] text-muted-foreground mb-4">
+            Execution model: ${(0.005).toFixed(3)} slippage/leg, 90% both-legs fill probability, $0.05 leg-risk loss if a leg goes naked. “Risk-adj” is the probability-weighted expectation.
+          </div>
 
           {paperTrades.length === 0 ? (
             <div className="text-center text-sm text-muted-foreground p-4 border border-dashed rounded-md">
@@ -476,7 +494,8 @@ export default function Dashboard() {
                   <TableHead className="text-right">Size</TableHead>
                   <TableHead className="text-right">Invested</TableHead>
                   <TableHead className="text-right">Net / ct</TableHead>
-                  <TableHead className="text-right">Exp. P&L</TableHead>
+                  <TableHead className="text-right">P&L (slip)</TableHead>
+                  <TableHead className="text-right">P&L (risk-adj)</TableHead>
                   <TableHead className="text-right">Status</TableHead>
                 </TableRow>
               </TableHeader>
@@ -488,8 +507,15 @@ export default function Dashboard() {
                     </TableCell>
                     <TableCell className="text-right font-mono text-xs">{t.size}</TableCell>
                     <TableCell className="text-right font-mono text-xs">${t.cost_basis.toFixed(2)}</TableCell>
-                    <TableCell className="text-right font-mono text-xs text-green-600">+${t.net_margin_per_contract.toFixed(3)}</TableCell>
-                    <TableCell className="text-right font-mono text-xs font-semibold text-green-700">+${t.expected_net_pnl.toFixed(2)}</TableCell>
+                    <TableCell className={`text-right font-mono text-xs ${t.net_margin_per_contract >= 0 ? "text-green-600" : "text-red-600"}`}>
+                      {t.net_margin_per_contract >= 0 ? "+" : "−"}${Math.abs(t.net_margin_per_contract).toFixed(3)}
+                    </TableCell>
+                    <TableCell className={`text-right font-mono text-xs font-semibold ${t.expected_net_pnl >= 0 ? "text-green-700" : "text-red-600"}`}>
+                      {t.expected_net_pnl >= 0 ? "+" : "−"}${Math.abs(t.expected_net_pnl).toFixed(2)}
+                    </TableCell>
+                    <TableCell className={`text-right font-mono text-xs ${t.risk_adj_net_pnl >= 0 ? "text-slate-500" : "text-red-500"}`}>
+                      {t.risk_adj_net_pnl >= 0 ? "+" : "−"}${Math.abs(t.risk_adj_net_pnl).toFixed(2)}
+                    </TableCell>
                     <TableCell className="text-right">
                       <Badge variant="outline" className={t.status === "settled" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-amber-50 text-amber-700 border-amber-200"}>
                         {t.status}

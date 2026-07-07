@@ -45,6 +45,19 @@ def kalshi_trading_fee(price, contracts=1.0):
 # so the average price -- and the true margin -- degrades with size.
 TARGET_CONTRACTS = 100.0
 
+# Execution-risk model (slippage + leg risk). The order-book walk gives the price
+# you would get if the book stood still and both legs filled instantly. Reality:
+#  - SLIPPAGE_PER_LEG: the book moves between seeing a price and getting filled,
+#    so you give up a little on each leg.
+#  - LEG_FILL_PROBABILITY: the two legs are placed separately; sometimes only one
+#    fills before the other moves or vanishes.
+#  - LEG_RISK_LOSS: if a leg is left naked, you unwind it at a loss (spread +
+#    adverse move) of roughly this much per contract.
+# All tunable; defaults are deliberately conservative for a fast hourly market.
+SLIPPAGE_PER_LEG = 0.005       # dollars given up per leg (~0.5 cent)
+LEG_FILL_PROBABILITY = 0.90    # chance BOTH legs complete as intended
+LEG_RISK_LOSS = 0.05           # dollars lost per contract when a leg goes naked
+
 def walk_book(ask_ladder, target_size):
     """Walk an ascending ask ladder to fill `target_size`.
 
@@ -80,7 +93,16 @@ def execution_at_size(poly_ladder, kalshi_ladder, target_size):
     avg_kalshi, _, _ = walk_book(kalshi_ladder, fill_size)
     total_cost = avg_poly + avg_kalshi
     fee_per_contract = kalshi_trading_fee(avg_kalshi) if avg_kalshi > 0 else 0.0
-    net_margin = 1.0 - total_cost - fee_per_contract
+    net_margin = 1.0 - total_cost - fee_per_contract   # after fees, ideal fill
+
+    # Layer in execution risk: slippage on each leg, then a probability-weighted
+    # expectation that accounts for the chance the pair fails to complete.
+    total_slippage = 2.0 * SLIPPAGE_PER_LEG
+    net_margin_slipped = net_margin - total_slippage   # after fees + slippage
+    risk_adj_net_margin = (
+        LEG_FILL_PROBABILITY * net_margin_slipped
+        - (1.0 - LEG_FILL_PROBABILITY) * LEG_RISK_LOSS
+    )
 
     return {
         "target_size": target_size,
@@ -89,9 +111,17 @@ def execution_at_size(poly_ladder, kalshi_ladder, target_size):
         "avg_kalshi_cost": avg_kalshi,
         "total_cost_at_size": total_cost,
         "fee_per_contract": fee_per_contract,
-        "net_margin_at_size": net_margin,          # per contract, after fees
-        "total_net_pnl": net_margin * fill_size,   # over the whole fillable size
-        "is_arbitrage_at_size": net_margin > 0.0 and fill_size >= MIN_CONTRACTS,
+        "net_margin_at_size": net_margin,               # per contract, after fees only
+        "slippage_per_leg": SLIPPAGE_PER_LEG,
+        "total_slippage": total_slippage,
+        "net_margin_slipped": net_margin_slipped,       # after fees + slippage
+        "fill_probability": LEG_FILL_PROBABILITY,
+        "risk_adj_net_margin": risk_adj_net_margin,     # expected, after leg risk
+        "total_net_pnl": net_margin * fill_size,        # ideal, over fillable size
+        "total_net_pnl_slipped": net_margin_slipped * fill_size,
+        "risk_adj_net_pnl": risk_adj_net_margin * fill_size,
+        # A real edge must survive fees AND slippage, with enough depth.
+        "is_arbitrage_at_size": net_margin_slipped > 0.0 and fill_size >= MIN_CONTRACTS,
     }
 
 def evaluate_check(check):
@@ -298,6 +328,8 @@ def get_arbitrage_data():
                 avg_poly_cost=execu["avg_poly_cost"],
                 avg_kalshi_cost=execu["avg_kalshi_cost"],
                 fee_per_contract=execu["fee_per_contract"],
+                slippage_per_leg=execu["slippage_per_leg"],
+                risk_adj_net_per_contract=execu["risk_adj_net_margin"],
                 timestamp=response["timestamp"],
             )
             check["paper_trade_recorded"] = trade is not None
@@ -327,11 +359,16 @@ def simulate_paper_trade():
     since genuine live arbitrage is rare. Clearly tagged as SIMULATED; settles a
     few seconds out so the next poll flips it to 'settled'."""
     now = datetime.datetime.now(datetime.timezone.utc)
+    # Model the same slippage + leg-risk the live path uses, so the demo trade is
+    # realistic. Gross here is 1 - (0.41+0.55) - 0.02 fee = 0.02/contract.
+    net_slipped = 1.0 - (0.41 + 0.55) - 0.02 - 2.0 * SLIPPAGE_PER_LEG
+    risk_adj = LEG_FILL_PROBABILITY * net_slipped - (1.0 - LEG_FILL_PROBABILITY) * LEG_RISK_LOSS
     trade = PT.record(
         window="SIMULATED-" + now.isoformat(),
         settle_time=(now + datetime.timedelta(seconds=5)).isoformat(),
         kalshi_strike=63000, poly_leg="Up", kalshi_leg="No", size=75,
         avg_poly_cost=0.41, avg_kalshi_cost=0.55, fee_per_contract=0.02,
+        slippage_per_leg=SLIPPAGE_PER_LEG, risk_adj_net_per_contract=risk_adj,
         timestamp=now.isoformat(),
     )
     return {"status": "ok", "trade": trade, "summary": PT.summary()}
