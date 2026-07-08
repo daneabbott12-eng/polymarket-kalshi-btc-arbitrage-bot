@@ -5,6 +5,7 @@ from fetch_current_kalshi import fetch_kalshi_data_struct, get_orderbook_ask_lad
 from paper_trader import PaperTrader
 from execution_engine import ExecutionEngine
 from clients.kalshi_readonly_client import KalshiReadOnlyClient
+from assets import ASSETS
 import datetime
 import math
 import os
@@ -91,6 +92,11 @@ def compute_target_contracts(real_balance, committed):
 SLIPPAGE_PER_LEG = _env_float("ARB_SLIPPAGE_PER_LEG", 0.005)       # $ per leg (~0.5 cent)
 LEG_FILL_PROBABILITY = _env_float("ARB_LEG_FILL_PROBABILITY", 0.90) # chance both legs fill
 LEG_RISK_LOSS = _env_float("ARB_LEG_RISK_LOSS", 0.05)              # $ lost per naked leg
+
+# "Fat edge" filter: only record/act on opportunities whose net-after-slippage
+# margin is at least this ($/contract). Thin edges aren't worth the execution
+# risk. Set to 0 to take every risk-adjusted-positive edge.
+MIN_MARGIN = _env_float("ARB_MIN_MARGIN", 0.02)
 
 def walk_book(ask_ladder, target_size):
     """Walk an ascending ask ladder to fill `target_size`.
@@ -200,179 +206,152 @@ PT = PaperTrader()
 # Execution engine (DRY_RUN unless explicitly armed with credentials).
 ENGINE = ExecutionEngine()
 
-@app.get("/arbitrage")
-def get_arbitrage_data():
-    # Fetch Data
-    poly_data, poly_err = fetch_polymarket_data_struct()
-    kalshi_data, kalshi_err = fetch_kalshi_data_struct()
-    
-    response = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "polymarket": poly_data,
-        "kalshi": kalshi_data,
-        "checks": [],
-        "opportunities": [],
-        "errors": []
-    }
-    
-    if poly_err:
-        response["errors"].append(poly_err)
-    if kalshi_err:
-        response["errors"].append(kalshi_err)
-        
-    if not poly_data or not kalshi_data:
-        return response
-
-    # Logic
-    poly_strike = poly_data['price_to_beat']
-    poly_up_cost = poly_data['prices'].get('Up', 0.0)
-    poly_down_cost = poly_data['prices'].get('Down', 0.0)
-
-    # Depth (shares) available at the best ask on each Polymarket leg
+def compute_asset_checks(asset_name, poly_data, kalshi_data):
+    """Best-ask arbitrage checks for one asset. Returns a list of tagged checks
+    (no side effects); the caller aggregates across assets."""
+    poly_strike = poly_data.get('price_to_beat')
+    if poly_strike is None:
+        return []
+    poly_prices = poly_data.get('prices', {})
+    poly_up_cost = poly_prices.get('Up', 0.0)
+    poly_down_cost = poly_prices.get('Down', 0.0)
     poly_sizes = poly_data.get('sizes', {})
     poly_up_size = poly_sizes.get('Up', 0.0)
     poly_down_size = poly_sizes.get('Down', 0.0)
-    poly_books = poly_data.get('books', {})
     poly_token_ids = poly_data.get('token_ids', {})
 
-    if poly_strike is None:
-        response["errors"].append("Polymarket Strike is None")
-        return response
+    kalshi_markets = sorted(kalshi_data.get('markets', []), key=lambda x: x['strike'])
+    if not kalshi_markets:
+        return []
 
-    # Identify the hourly market window (for paper-trade dedup + settlement)
-    target = poly_data['target_time_utc']
-    if isinstance(target, str):
-        target = datetime.datetime.fromisoformat(target)
-    window = target.isoformat()
-    settle_time = (target + datetime.timedelta(hours=1)).isoformat()
+    # Select the ~9 markets closest to the poly strike (price to beat).
+    closest_idx = min(range(len(kalshi_markets)),
+                      key=lambda i: abs(kalshi_markets[i]['strike'] - poly_strike))
+    selected = kalshi_markets[max(0, closest_idx - 4):closest_idx + 5]
 
-    def finalize(check, km):
-        """Confirm the check at best ask and file it."""
-        if evaluate_check(check):
-            response["opportunities"].append(check)
-        response["checks"].append(check)
-
-    kalshi_markets = kalshi_data.get('markets', [])
-    
-    # Ensure sorted by strike
-    kalshi_markets.sort(key=lambda x: x['strike'])
-    
-    # Find index closest to poly_strike
-    closest_idx = 0
-    min_diff = float('inf')
-    for i, m in enumerate(kalshi_markets):
-        diff = abs(m['strike'] - poly_strike)
-        if diff < min_diff:
-            min_diff = diff
-            closest_idx = i
-            
-    # Select 4 below and 4 above (approx 8-9 markets total)
-    # If closest is at index C, we want [C-4, C+5] roughly
-    start_idx = max(0, closest_idx - 4)
-    end_idx = min(len(kalshi_markets), closest_idx + 5) # +5 to include the closest and 4 above
-    
-    selected_markets = kalshi_markets[start_idx:end_idx]
-    
-    for km in selected_markets:
-        kalshi_strike = km['strike']
-        kalshi_yes_cost = km['yes_ask'] / 100.0
-        kalshi_no_cost = km['no_ask'] / 100.0
-        kalshi_yes_size = km.get('yes_ask_size', 0.0)
-        kalshi_no_size = km.get('no_ask_size', 0.0)
-
-        # Only check markets within range (removed previous hardcoded range check)
-
-        check_data = {
-            "kalshi_strike": kalshi_strike,
-            "kalshi_yes": kalshi_yes_cost,
-            "kalshi_no": kalshi_no_cost,
-            "type": "",
-            "poly_leg": "",
-            "kalshi_leg": "",
-            "poly_cost": 0,
-            "kalshi_cost": 0,
-            "total_cost": 0,
-            "poly_size": 0,
-            "kalshi_size": 0,
-            "max_size": 0,
-            "gross_margin": 0,
-            "fees": 0,
-            "net_margin": 0,
-            "is_arbitrage": False,
-            "margin": 0,
-            "execution": None,
-            "paper_trade_recorded": False,
-            # Exchange identifiers needed to place orders (used by the executor).
-            "kalshi_ticker": km.get("ticker"),
-            "poly_token_id": None
+    def new_check(km):
+        return {
+            "asset": asset_name,
+            "kalshi_strike": km['strike'],
+            "kalshi_yes": km['yes_ask'] / 100.0,
+            "kalshi_no": km['no_ask'] / 100.0,
+            "type": "", "poly_leg": "", "kalshi_leg": "",
+            "poly_cost": 0, "kalshi_cost": 0, "total_cost": 0,
+            "poly_size": 0, "kalshi_size": 0, "max_size": 0,
+            "gross_margin": 0, "fees": 0, "net_margin": 0,
+            "is_arbitrage": False, "margin": 0,
+            "execution": None, "paper_trade_recorded": False,
+            "kalshi_ticker": km.get("ticker"), "poly_token_id": None,
         }
 
-        def set_legs(check, poly_leg, kalshi_leg, poly_cost, kalshi_cost, poly_size, kalshi_size):
-            check["poly_leg"] = poly_leg
-            check["kalshi_leg"] = kalshi_leg
-            check["poly_cost"] = poly_cost
-            check["kalshi_cost"] = kalshi_cost
-            check["total_cost"] = poly_cost + kalshi_cost
-            check["poly_size"] = poly_size
-            check["kalshi_size"] = kalshi_size
-            check["poly_token_id"] = poly_token_ids.get(poly_leg)
-            # Executable depth is limited by the smaller of the two legs
-            check["max_size"] = min(poly_size, kalshi_size)
+    def set_legs(check, poly_leg, kalshi_leg, poly_cost, kalshi_cost, poly_size, kalshi_size):
+        check["poly_leg"] = poly_leg
+        check["kalshi_leg"] = kalshi_leg
+        check["poly_cost"] = poly_cost
+        check["kalshi_cost"] = kalshi_cost
+        check["total_cost"] = poly_cost + kalshi_cost
+        check["poly_size"] = poly_size
+        check["kalshi_size"] = kalshi_size
+        check["poly_token_id"] = poly_token_ids.get(poly_leg)
+        check["max_size"] = min(poly_size, kalshi_size)
 
-        if poly_strike > kalshi_strike:
-            check_data["type"] = "Poly > Kalshi"
-            set_legs(check_data, "Down", "Yes", poly_down_cost, kalshi_yes_cost, poly_down_size, kalshi_yes_size)
+    checks = []
+    for km in selected:
+        ks = km['strike']
+        kyc = km['yes_ask'] / 100.0
+        knc = km['no_ask'] / 100.0
+        kys = km.get('yes_ask_size', 0.0)
+        kns = km.get('no_ask_size', 0.0)
+        if poly_strike > ks:
+            c = new_check(km); c["type"] = "Poly > Kalshi"
+            set_legs(c, "Down", "Yes", poly_down_cost, kyc, poly_down_size, kys)
+            evaluate_check(c); checks.append(c)
+        elif poly_strike < ks:
+            c = new_check(km); c["type"] = "Poly < Kalshi"
+            set_legs(c, "Up", "No", poly_up_cost, knc, poly_up_size, kns)
+            evaluate_check(c); checks.append(c)
+        else:
+            c1 = new_check(km); c1["type"] = "Equal"
+            set_legs(c1, "Down", "Yes", poly_down_cost, kyc, poly_down_size, kys)
+            evaluate_check(c1); checks.append(c1)
+            c2 = new_check(km); c2["type"] = "Equal"
+            set_legs(c2, "Up", "No", poly_up_cost, knc, poly_up_size, kns)
+            evaluate_check(c2); checks.append(c2)
+    return checks
 
-        elif poly_strike < kalshi_strike:
-            check_data["type"] = "Poly < Kalshi"
-            set_legs(check_data, "Up", "No", poly_up_cost, kalshi_no_cost, poly_up_size, kalshi_no_size)
+@app.get("/arbitrage")
+def get_arbitrage_data():
+    response = {
+        "timestamp": datetime.datetime.now().isoformat(),
+        "polymarket": None,
+        "kalshi": None,
+        "checks": [],
+        "opportunities": [],
+        "errors": [],
+        "assets": [],
+    }
 
-        elif poly_strike == kalshi_strike:
-            # Check 1
-            check1 = check_data.copy()
-            check1["type"] = "Equal"
-            set_legs(check1, "Down", "Yes", poly_down_cost, kalshi_yes_cost, poly_down_size, kalshi_yes_size)
+    # Fetch + compute per asset (each independent; one asset failing is skipped).
+    poly_books_by_asset = {}
+    window = None
+    settle_time = None
+    for asset in ASSETS:
+        name = asset["name"]
+        poly_data, poly_err = fetch_polymarket_data_struct(
+            asset["poly"], asset["kalshi"], asset["kraken"], asset["binance"])
+        kalshi_data, kalshi_err = fetch_kalshi_data_struct(
+            asset["poly"], asset["kalshi"], asset["kraken"], asset["binance"])
+        if poly_err:
+            response["errors"].append(f"{name} poly: {poly_err}")
+        if kalshi_err:
+            response["errors"].append(f"{name} kalshi: {kalshi_err}")
+        if not poly_data or not kalshi_data or poly_data.get("price_to_beat") is None:
+            continue
 
-            finalize(check1, km)
+        response["checks"].extend(compute_asset_checks(name, poly_data, kalshi_data))
+        poly_books_by_asset[name] = poly_data.get("books", {})
+        response["assets"].append(name)
 
-            # Check 2
-            check2 = check_data.copy()
-            check2["type"] = "Equal"
-            set_legs(check2, "Up", "No", poly_up_cost, kalshi_no_cost, poly_up_size, kalshi_no_size)
+        # First successful asset provides the market-card data + the hourly window
+        # (all assets share the same target hour for dedup/settlement).
+        if response["polymarket"] is None:
+            response["polymarket"] = poly_data
+            response["kalshi"] = kalshi_data
+            target = poly_data["target_time_utc"]
+            if isinstance(target, str):
+                target = datetime.datetime.fromisoformat(target)
+            window = target.isoformat()
+            settle_time = (target + datetime.timedelta(hours=1)).isoformat()
 
-            finalize(check2, km)
-            continue # Skip adding the base check_data
-
-        finalize(check_data, km)
+    response["opportunities"] = [c for c in response["checks"] if c["is_arbitrage"]]
+    if window is None:
+        return response  # nothing fetched this poll
 
     # Realistic at-size execution: walk the order books for the most competitive
-    # tradeable markets (lowest combined best-ask cost). The best ask is only the
-    # top level; filling TARGET_CONTRACTS sweeps deeper, worse levels, so the true
-    # margin degrades with size. Capped at a few markets to bound API calls.
-    # If a live account is connected, cap paper sizes to what it could afford:
-    # available = real balance - capital already committed to open paper trades.
+    # tradeable markets ACROSS ALL ASSETS (lowest combined best-ask cost). Capped
+    # at a few markets to bound API calls. If a live account is connected, cap
+    # paper sizes to available balance (real balance - open commitments).
     real_balance = get_real_balance_dollars()
-    # Scale the target trade size with buying power (fixed default otherwise).
     target_contracts = compute_target_contracts(real_balance, PT.committed_capital())
 
-    ticker_by_strike = {m['strike']: m.get('ticker') for m in selected_markets}
     tradeable = [c for c in response["checks"] if c["poly_cost"] > 0 and c["kalshi_cost"] > 0]
     tradeable.sort(key=lambda c: c["total_cost"])
-    for check in tradeable[:3]:
-        ticker = ticker_by_strike.get(check["kalshi_strike"])
+    for check in tradeable[:6]:
+        ticker = check.get("kalshi_ticker")
         if not ticker:
             continue
         ladders, _ = get_orderbook_ask_ladders(ticker)
         kalshi_ladder = ladders["yes"] if check["kalshi_leg"] == "Yes" else ladders["no"]
-        poly_ladder = poly_books.get(check["poly_leg"], [])
+        poly_ladder = poly_books_by_asset.get(check["asset"], {}).get(check["poly_leg"], [])
         execu = execution_at_size(poly_ladder, kalshi_ladder, target_contracts)
         if not execu:
             continue
         check["execution"] = execu
-        if not execu["is_arbitrage_at_size"]:
+        # Fat-edge + risk-adjusted gate: only act on edges >= MIN_MARGIN that are
+        # also positive after the leg-risk haircut.
+        if not execu["is_arbitrage_at_size"] or execu["net_margin_slipped"] < MIN_MARGIN:
             continue
 
-        # Cost to enter one contract (both legs + slippage + Kalshi fee).
         cost_per_contract = (execu["avg_poly_cost"] + execu["avg_kalshi_cost"]
                              + execu["total_slippage"] + execu["fee_per_contract"])
         size, capped = cap_size_to_budget(
@@ -383,7 +362,7 @@ def get_arbitrage_data():
             continue  # can't afford even one contract right now
 
         trade = PT.record(
-            window=window, settle_time=settle_time,
+            window=f"{check['asset']}:{window}", settle_time=settle_time,
             kalshi_strike=check["kalshi_strike"],
             poly_leg=check["poly_leg"], kalshi_leg=check["kalshi_leg"],
             size=size,

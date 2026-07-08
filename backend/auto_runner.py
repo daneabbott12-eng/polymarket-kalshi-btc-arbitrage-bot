@@ -48,6 +48,7 @@ def actionable_opportunities(data):
         e = c.get("execution")
         if e and e.get("is_arbitrage_at_size"):
             out.append({
+                "asset": c.get("asset", "?"),
                 "window": window,
                 "poly_leg": c["poly_leg"],
                 "kalshi_leg": c["kalshi_leg"],
@@ -66,8 +67,8 @@ def actionable_opportunities(data):
 
 def alert(opp):
     msg = (
-        f"OPPORTUNITY {opp['window']} | P-{opp['poly_leg']} + "
-        f"K-{opp['kalshi_leg']}(${opp['kalshi_strike']:,.0f}) x{opp['size']:.0f} | "
+        f"OPPORTUNITY {opp['asset']} {opp['window']} | P-{opp['poly_leg']} + "
+        f"K-{opp['kalshi_leg']}(${opp['kalshi_strike']:,.4f}) x{opp['size']:.0f} | "
         f"net(after slip) ${opp['net_margin_slipped']:+.4f}/ct  "
         f"risk-adj ${opp['risk_adj_net_margin']:+.4f}/ct  "
         f"est P&L ${opp['total_net_pnl_slipped']:+.2f}"
@@ -94,7 +95,7 @@ def main():
             if data.get("errors"):
                 log.debug("api errors: %s", data["errors"])
             for opp in actionable_opportunities(data):
-                key = f"{opp['window']}|{opp['kalshi_strike']}|{opp['poly_leg']}|{opp['kalshi_leg']}"
+                key = f"{opp['asset']}|{opp['window']}|{opp['kalshi_strike']}|{opp['poly_leg']}|{opp['kalshi_leg']}"
                 if key in seen:
                     continue
                 seen.add(key)

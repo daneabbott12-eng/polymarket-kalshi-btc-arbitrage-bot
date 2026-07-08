@@ -17,16 +17,16 @@ KRAKEN_TICKER_URL = "https://api.kraken.com/0/public/Ticker"
 KRAKEN_OHLC_URL = "https://api.kraken.com/0/public/OHLC"
 KRAKEN_PAIR = "XBTUSDT"
 
-def _kraken_current_price():
-    resp = requests.get(KRAKEN_TICKER_URL, params={"pair": KRAKEN_PAIR})
+def _kraken_current_price(pair=KRAKEN_PAIR):
+    resp = requests.get(KRAKEN_TICKER_URL, params={"pair": pair})
     resp.raise_for_status()
     result = resp.json()["result"]
     key = next(iter(result))
     return float(result[key]["c"][0])
 
-def _kraken_open_price(target_time_utc):
+def _kraken_open_price(target_time_utc, pair=KRAKEN_PAIR):
     since = int(target_time_utc.timestamp()) - 3600
-    resp = requests.get(KRAKEN_OHLC_URL, params={"pair": KRAKEN_PAIR, "interval": 60, "since": since})
+    resp = requests.get(KRAKEN_OHLC_URL, params={"pair": pair, "interval": 60, "since": since})
     resp.raise_for_status()
     result = resp.json()["result"]
     key = next(k for k in result if k != "last")
@@ -121,26 +121,26 @@ def get_polymarket_data(slug):
     except Exception as e:
         return None, str(e)
 
-def get_binance_current_price():
+def get_binance_current_price(symbol=SYMBOL, kraken_pair=KRAKEN_PAIR):
     try:
-        response = requests.get(BINANCE_PRICE_URL, params={"symbol": SYMBOL})
+        response = requests.get(BINANCE_PRICE_URL, params={"symbol": symbol})
         response.raise_for_status()
         data = response.json()
         return float(data["price"]), None
     except Exception as e:
         # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
         try:
-            return _kraken_current_price(), None
+            return _kraken_current_price(kraken_pair), None
         except Exception:
             return None, str(e)
 
 # The hourly open ("price to beat") is fixed for the whole hour, so cache it per
-# target hour. This avoids hammering the price API every poll -- which under
-# 1s polling was rate-limiting Kraken and intermittently returning None.
+# (target hour, asset). This avoids hammering the price API every poll -- which
+# under 1s polling was rate-limiting Kraken and intermittently returning None.
 _open_price_cache = {}
 
-def get_binance_open_price(target_time_utc):
-    cache_key = int(target_time_utc.timestamp())
+def get_binance_open_price(target_time_utc, symbol=SYMBOL, kraken_pair=KRAKEN_PAIR):
+    cache_key = (int(target_time_utc.timestamp()), symbol)
     if cache_key in _open_price_cache:
         return _open_price_cache[cache_key], None
     try:
@@ -149,7 +149,7 @@ def get_binance_open_price(target_time_utc):
 
         # Fetch 1h kline for the specific timestamp
         params = {
-            "symbol": SYMBOL,
+            "symbol": symbol,
             "interval": "1h",
             "startTime": timestamp_ms,
             "limit": 1
@@ -168,7 +168,7 @@ def get_binance_open_price(target_time_utc):
     except Exception as e:
         # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
         try:
-            price = _kraken_open_price(target_time_utc)
+            price = _kraken_open_price(target_time_utc, kraken_pair)
             if price is not None:
                 _open_price_cache[cache_key] = price
                 return price, None
@@ -176,23 +176,24 @@ def get_binance_open_price(target_time_utc):
         except Exception:
             return None, str(e)
 
-def fetch_polymarket_data_struct():
+def fetch_polymarket_data_struct(poly_word="bitcoin", kalshi_series="kxbtcd",
+                                 kraken_pair="XBTUSDT", binance_symbol="BTCUSDT"):
     """
-    Fetches current Polymarket data and returns a structured dictionary.
+    Fetches current Polymarket data for an asset and returns a structured dict.
     """
     try:
         # Get current market info
-        market_info = get_current_market_urls()
+        market_info = get_current_market_urls(poly_word, kalshi_series)
         polymarket_url = market_info["polymarket"]
         target_time_utc = market_info["target_time_utc"]
-        
+
         # Extract slug from URL
         slug = polymarket_url.split("/")[-1]
-        
+
         # Fetch Data
         poly_result, poly_err = get_polymarket_data(slug)
-        current_price, curr_err = get_binance_current_price()
-        price_to_beat, beat_err = get_binance_open_price(target_time_utc)
+        current_price, curr_err = get_binance_current_price(binance_symbol, kraken_pair)
+        price_to_beat, beat_err = get_binance_open_price(target_time_utc, binance_symbol, kraken_pair)
 
         if poly_err:
             return None, f"Polymarket Error: {poly_err}"

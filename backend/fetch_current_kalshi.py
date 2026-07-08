@@ -10,16 +10,16 @@ KALSHI_API_URL = "https://api.elections.kalshi.com/trade-api/v2/markets"
 BINANCE_PRICE_URL = "https://api.binance.com/api/v3/ticker/price"
 SYMBOL = "BTCUSDT"
 
-def get_binance_current_price():
+def get_binance_current_price(symbol=SYMBOL, kraken_pair="XBTUSDT"):
     try:
-        response = requests.get(BINANCE_PRICE_URL, params={"symbol": SYMBOL})
+        response = requests.get(BINANCE_PRICE_URL, params={"symbol": symbol})
         response.raise_for_status()
         data = response.json()
         return float(data["price"]), None
     except Exception as e:
         # Fallback to Kraken if Binance is unreachable (e.g. HTTP 451 geo-block)
         try:
-            return _kraken_current_price(), None
+            return _kraken_current_price(kraken_pair), None
         except Exception:
             return None, str(e)
 
@@ -72,27 +72,28 @@ def get_orderbook_ask_ladders(ticker, depth=10):
         return {"yes": [], "no": []}, str(e)
 
 def parse_strike(subtitle):
-    # Format: "$96,250 or above"
-    # Extract number, remove commas
-    match = re.search(r'\$([\d,]+)', subtitle)
+    # Format: "$96,250 or above" (BTC) or "$3.20 or above" (XRP) or "$0.42" (DOGE)
+    # Extract number, keep decimals, remove thousands separators.
+    match = re.search(r'\$([\d,]+(?:\.\d+)?)', subtitle)
     if match:
         return float(match.group(1).replace(',', ''))
     return 0.0
 
-def fetch_kalshi_data_struct():
+def fetch_kalshi_data_struct(poly_word="bitcoin", kalshi_series="kxbtcd",
+                             kraken_pair="XBTUSDT", binance_symbol="BTCUSDT"):
     """
-    Fetches current Kalshi markets and returns a list of market dictionaries.
+    Fetches current Kalshi markets for an asset and returns a structured dict.
     """
     try:
         # Get current market info
-        market_info = get_current_market_urls()
+        market_info = get_current_market_urls(poly_word, kalshi_series)
         kalshi_url = market_info["kalshi"]
-        
+
         # Extract event ticker from URL
         event_ticker = kalshi_url.split("/")[-1].upper()
-        
-        # Fetch Current BTC Price
-        current_price, err = get_binance_current_price()
+
+        # Fetch Current Price
+        current_price, err = get_binance_current_price(binance_symbol, kraken_pair)
         
         # Fetch Kalshi Markets
         markets, err = get_kalshi_markets(event_ticker)

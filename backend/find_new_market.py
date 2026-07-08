@@ -4,11 +4,11 @@ import pytz
 # Base URL for Polymarket events
 BASE_URL = "https://polymarket.com/event/"
 
-def generate_slug(target_time):
+def generate_slug(target_time, asset_word="bitcoin"):
     """
     Generates the Polymarket event slug for a given datetime.
-    Format: bitcoin-up-or-down-[month]-[day]-[hour][am/pm]-et
-    Example: bitcoin-up-or-down-november-26-1pm-et
+    Format: <asset>-up-or-down-[month]-[day]-[year]-[hour][am/pm]-et
+    Example: bitcoin-up-or-down-november-26-2025-1pm-et
     """
     # Ensure time is in Eastern Time
     et_tz = pytz.timezone('US/Eastern')
@@ -22,19 +22,19 @@ def generate_slug(target_time):
     month = target_time.strftime("%B").lower()
     day = target_time.day
     year = target_time.year
-    
+
     # Hour formatting: 12-hour format with am/pm, lowercase, no leading zero for single digits
     hour_int = int(target_time.strftime("%I"))
     am_pm = target_time.strftime("%p").lower()
-    
-    slug = f"bitcoin-up-or-down-{month}-{day}-{year}-{hour_int}{am_pm}-et"
+
+    slug = f"{asset_word}-up-or-down-{month}-{day}-{year}-{hour_int}{am_pm}-et"
     return slug
 
-def generate_market_url(target_time):
+def generate_market_url(target_time, asset_word="bitcoin"):
     """
     Generates the full Polymarket URL for a given datetime.
     """
-    slug = generate_slug(target_time)
+    slug = generate_slug(target_time, asset_word)
     return f"{BASE_URL}{slug}"
 
 def get_next_market_urls(num_hours=5):

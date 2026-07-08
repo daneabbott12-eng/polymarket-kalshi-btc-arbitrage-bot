@@ -4,10 +4,10 @@ import pytz
 # Base URL for Kalshi events
 BASE_URL = "https://kalshi.com/markets/kxbtcd/bitcoin-price-abovebelow/"
 
-def generate_kalshi_slug(target_time):
+def generate_kalshi_slug(target_time, series="kxbtcd"):
     """
     Generates the Kalshi event slug for a given datetime.
-    Format: kxbtcd-[YY][MMM][DD][HH]
+    Format: <series>-[YY][MMM][DD][HH]
     Example: kxbtcd-25nov2614 (Nov 26, 2025, 14:00 ET)
     """
     # Ensure time is in Eastern Time
@@ -23,15 +23,15 @@ def generate_kalshi_slug(target_time):
     month = target_time.strftime("%b").lower() # 3-letter month, lowercase
     day = target_time.strftime("%d") # 2-digit day
     hour = target_time.strftime("%H") # 24-hour format
-    
-    slug = f"kxbtcd-{year}{month}{day}{hour}"
+
+    slug = f"{series}-{year}{month}{day}{hour}"
     return slug
 
-def generate_kalshi_url(target_time):
+def generate_kalshi_url(target_time, series="kxbtcd"):
     """
     Generates the full Kalshi URL for a given datetime.
     """
-    slug = generate_kalshi_slug(target_time)
+    slug = generate_kalshi_slug(target_time, series)
     return f"{BASE_URL}{slug}"
 
 def generate_urls_until_year_end():
