@@ -154,8 +154,11 @@ def execution_at_size(poly_ladder, kalshi_ladder, target_size):
         "total_net_pnl": net_margin * fill_size,        # ideal, over fillable size
         "total_net_pnl_slipped": net_margin_slipped * fill_size,
         "risk_adj_net_pnl": risk_adj_net_margin * fill_size,
-        # A real edge must survive fees AND slippage, with enough depth.
-        "is_arbitrage_at_size": net_margin_slipped > 0.0 and fill_size >= MIN_CONTRACTS,
+        # A real edge must survive fees, slippage, AND the leg-risk haircut, with
+        # enough depth. Gating on risk_adj (not just net-after-slippage) skips
+        # thin edges that are positive on paper but losers once you weight in the
+        # chance a leg hangs -- those aren't worth taking at any size.
+        "is_arbitrage_at_size": risk_adj_net_margin > 0.0 and fill_size >= MIN_CONTRACTS,
     }
 
 def evaluate_check(check):
