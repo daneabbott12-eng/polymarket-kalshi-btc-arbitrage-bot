@@ -6,6 +6,7 @@ from paper_trader import PaperTrader
 from execution_engine import ExecutionEngine
 from clients.kalshi_readonly_client import KalshiReadOnlyClient
 from assets import ASSETS
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import math
 import os
@@ -97,6 +98,11 @@ LEG_RISK_LOSS = _env_float("ARB_LEG_RISK_LOSS", 0.05)              # $ lost per 
 # margin is at least this ($/contract). Thin edges aren't worth the execution
 # risk. Set to 0 to take every risk-adjusted-positive edge.
 MIN_MARGIN = _env_float("ARB_MIN_MARGIN", 0.02)
+
+# How many Kalshi strikes on each side of the price-to-beat to scan. Wider =
+# more of the curve covered (an arb can sit away from the money), at ~no extra
+# API cost since all strikes come in one markets fetch.
+STRIKE_WINDOW = int(_env_float("ARB_STRIKE_WINDOW", 15))
 
 def walk_book(ask_ladder, target_size):
     """Walk an ascending ask ladder to fill `target_size`.
@@ -224,10 +230,11 @@ def compute_asset_checks(asset_name, poly_data, kalshi_data):
     if not kalshi_markets:
         return []
 
-    # Select the ~9 markets closest to the poly strike (price to beat).
+    # Select the strikes closest to the poly strike (price to beat), STRIKE_WINDOW
+    # on each side. Wider coverage catches arbs that sit away from the money.
     closest_idx = min(range(len(kalshi_markets)),
                       key=lambda i: abs(kalshi_markets[i]['strike'] - poly_strike))
-    selected = kalshi_markets[max(0, closest_idx - 4):closest_idx + 5]
+    selected = kalshi_markets[max(0, closest_idx - STRIKE_WINDOW):closest_idx + STRIKE_WINDOW + 1]
 
     def new_check(km):
         return {
@@ -291,16 +298,25 @@ def get_arbitrage_data():
         "assets": [],
     }
 
-    # Fetch + compute per asset (each independent; one asset failing is skipped).
+    # Fetch every asset concurrently (each does several sequential API calls;
+    # running them in parallel keeps the endpoint fast and avoids the long
+    # sequential burst that was tripping rate limits).
+    def _fetch_asset(asset):
+        name = asset["name"]
+        pd, pe = fetch_polymarket_data_struct(
+            asset["poly"], asset["kalshi"], asset["kraken"], asset["binance"])
+        kd, ke = fetch_kalshi_data_struct(
+            asset["poly"], asset["kalshi"], asset["kraken"], asset["binance"])
+        return name, pd, pe, kd, ke
+
+    with ThreadPoolExecutor(max_workers=len(ASSETS)) as pool:
+        fetched = list(pool.map(_fetch_asset, ASSETS))
+
+    # Process results in ASSETS order (single-threaded; safe to mutate response).
     poly_books_by_asset = {}
     window = None
     settle_time = None
-    for asset in ASSETS:
-        name = asset["name"]
-        poly_data, poly_err = fetch_polymarket_data_struct(
-            asset["poly"], asset["kalshi"], asset["kraken"], asset["binance"])
-        kalshi_data, kalshi_err = fetch_kalshi_data_struct(
-            asset["poly"], asset["kalshi"], asset["kraken"], asset["binance"])
+    for name, poly_data, poly_err, kalshi_data, kalshi_err in fetched:
         if poly_err:
             response["errors"].append(f"{name} poly: {poly_err}")
         if kalshi_err:
