@@ -54,6 +54,7 @@ interface Execution {
 }
 
 interface Check {
+  asset?: string
   kalshi_strike: number
   type: string
   poly_leg: string
@@ -467,6 +468,7 @@ export default function Dashboard() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[60px]">Asset</TableHead>
                 <TableHead className="w-[100px]">Type</TableHead>
                 <TableHead>Kalshi Strike</TableHead>
                 <TableHead>Strategy</TableHead>
@@ -487,12 +489,15 @@ export default function Dashboard() {
                 return (
                   <TableRow key={i} className={isArb ? "bg-green-50/50" : ""}>
                     <TableCell>
+                      <Badge className="bg-slate-800 text-white whitespace-nowrap">{check.asset || "—"}</Badge>
+                    </TableCell>
+                    <TableCell>
                       <Badge variant="outline" className="whitespace-nowrap">
                         {check.type.replace("Poly", "P").replace("Kalshi", "K")}
                       </Badge>
                     </TableCell>
                     <TableCell className="font-mono text-xs">
-                      ${check.kalshi_strike.toLocaleString()}
+                      ${check.kalshi_strike.toLocaleString(undefined, {maximumFractionDigits: 4})}
                     </TableCell>
                     <TableCell className="text-xs">
                       <div className="flex flex-col">
